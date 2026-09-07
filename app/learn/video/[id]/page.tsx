@@ -10,6 +10,7 @@ import { logAuditEvent } from '@/lib/audit';
 import { canAccessBoard } from '@/lib/boardAccess';
 import { VideoPlayer } from '@/components/VideoPlayer';
 import { PartsList } from '@/components/PartsList';
+import { ShareButton } from '@/components/ShareButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -174,6 +175,7 @@ export default async function VideoPage({ params }: { params: { id: string } }) 
               <h1 className="font-display text-xl font-semibold text-ink">{video.title}</h1>
               {/* Download button intentionally removed: video downloads are
                   disabled for class pages per current policy. */}
+              <ShareButton />
             </div>
 
             {resources.length > 0 && (

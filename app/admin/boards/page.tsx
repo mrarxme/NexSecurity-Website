@@ -1,10 +1,12 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { ThumbnailUpload } from '@/components/ThumbnailUpload';
 import { SearchInput } from '@/components/SearchInput';
 import { Modal } from '@/components/Modal';
+import { CascadingBoardSelect } from '@/components/CascadingBoardSelect';
 import { UserMultiSelect, type SelectableUser } from '@/components/UserMultiSelect';
 import {
   ancestorTitles,
@@ -146,6 +148,19 @@ export default function AdminBoardsPage() {
     });
   }
 
+  function openCreateModal(defaultParentId: string) {
+    setParentId(defaultParentId);
+    setTitle('');
+    setDescription('');
+    setThumbnailUrl('');
+    setBoardType('normal');
+    setRoutineImageUrl('');
+    setVisibility('universal');
+    setNewBoardAccess(new Set());
+    setError(null);
+    setFormOpen(true);
+  }
+
   async function createBoard(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -264,7 +279,21 @@ export default function AdminBoardsPage() {
               </p>
             </div>
           </div>
-          <div className="flex shrink-0 gap-2">
+          <div className="flex shrink-0 flex-wrap justify-end gap-2">
+            <button
+              onClick={() => openCreateModal(node.id)}
+              className="rounded-md border border-vault-border px-2.5 py-1 text-xs text-ink-dim transition hover:border-signal hover:text-ink"
+              title="Add a board nested under this one"
+            >
+              + Sub-board
+            </button>
+            <Link
+              href={`/admin/videos?board=${node.id}`}
+              className="rounded-md border border-vault-border px-2.5 py-1 text-xs text-ink-dim transition hover:border-signal hover:text-ink"
+              title="Add a class under this board"
+            >
+              + Class
+            </Link>
             <button
               disabled={busyId === node.id}
               onClick={() => togglePublished(node)}
@@ -307,28 +336,35 @@ export default function AdminBoardsPage() {
       <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-display text-2xl font-semibold text-ink">Boards</h1>
         <button
-          onClick={() => setFormOpen((v) => !v)}
+          onClick={() => openCreateModal('')}
           className="rounded-md border border-vault-border px-3 py-1.5 text-xs font-medium text-ink-dim transition hover:border-signal hover:text-ink"
         >
-          {formOpen ? 'Close' : '+ New board'}
+          + New board
         </button>
       </div>
 
       {formOpen && (
+        <Modal title="New board" subtitle="Boards" onClose={() => setFormOpen(false)} wide>
         <form
           onSubmit={createBoard}
-          className="mt-4 grid grid-cols-1 gap-3 rounded-xl border border-vault-border bg-vault-900 p-5 sm:grid-cols-2 backdrop-blur-xl shadow-glass"
+          className="grid grid-cols-1 gap-3 sm:grid-cols-2"
         >
           <p className="sm:col-span-2 text-xs text-ink-faint">
-            Create top-level boards (leave parent empty) or nest one inside another — including
-            inside a board you already nested (e.g. Top-Level → Physics → Chapter 1).
+            Pick the top-level board first, then drill down to the exact spot this belongs
+            under — same picker as adding a class. Leave every level empty to create a new
+            Top-Level board.
           </p>
           <Field label="Title">
             <input required value={title} onChange={(e) => setTitle(e.target.value)} className="input" />
           </Field>
-          <Field label="Parent board (optional)">
-            <ParentBoardSelect value={parentId} onChange={setParentId} options={ordered} />
-          </Field>
+          <div>
+            <span className="font-mono text-[10px] uppercase tracking-widest text-ink-faint">
+              Parent board (optional)
+            </span>
+            <div className="mt-1">
+              <CascadingBoardSelect boards={boards} value={parentId} onChange={setParentId} requireSelection={false} />
+            </div>
+          </div>
           <div className="sm:col-span-2">
             <Field label="Thumbnail">
               <ThumbnailUpload value={thumbnailUrl} onChange={setThumbnailUrl} />
@@ -373,6 +409,7 @@ export default function AdminBoardsPage() {
               </Field>
             </div>
           )}
+          {error && <p className="sm:col-span-2 text-xs text-danger">{error}</p>}
           <div className="sm:col-span-2">
             <button
               type="submit"
@@ -383,9 +420,10 @@ export default function AdminBoardsPage() {
             </button>
           </div>
         </form>
+        </Modal>
       )}
 
-      {error && <p className="mt-3 text-xs text-danger">{error}</p>}
+      {error && !formOpen && <p className="mt-3 text-xs text-danger">{error}</p>}
 
       <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
         <h2 className="font-mono text-[11px] uppercase tracking-widest text-ink-faint">All boards, by section</h2>
@@ -439,7 +477,6 @@ export default function AdminBoardsPage() {
           <BoardEditPanel
             board={editingBoard}
             boards={boards}
-            ordered={ordered}
             onSaved={() => {
               load();
               loadAccessCounts();
@@ -452,45 +489,14 @@ export default function AdminBoardsPage() {
   );
 }
 
-/** Parent-board <select> with each option indented to match its depth, so
- * Top-Level boards read as section headers and every descendant sits
- * visibly underneath the board it belongs to. */
-function ParentBoardSelect({
-  value,
-  onChange,
-  options,
-  excludeIds,
-}: {
-  value: string;
-  onChange: (id: string) => void;
-  options: BoardNode<Board>[];
-  excludeIds?: Set<string>;
-}) {
-  return (
-    <select value={value} onChange={(e) => onChange(e.target.value)} className="input">
-      <option value="">— Top level —</option>
-      {options
-        .filter((b) => !excludeIds?.has(b.id))
-        .map((b) => (
-          <option key={b.id} value={b.id}>
-            {'—'.repeat(b.depth)} {b.depth > 0 ? ' ' : ''}
-            {b.title}
-          </option>
-        ))}
-    </select>
-  );
-}
-
 function BoardEditPanel({
   board,
   boards,
-  ordered,
   onSaved,
   onError,
 }: {
   board: Board;
   boards: Board[];
-  ordered: BoardNode<Board>[];
   onSaved: () => void;
   onError: (msg: string) => void;
 }) {
@@ -536,7 +542,7 @@ function BoardEditPanel({
         <input required value={title} onChange={(e) => setTitle(e.target.value)} className="input" />
       </Field>
       <Field label="Parent board">
-        <ParentBoardSelect value={parentId} onChange={setParentId} options={ordered} excludeIds={disallowed} />
+        <CascadingBoardSelect boards={boards} value={parentId} onChange={setParentId} excludeIds={disallowed} requireSelection={false} />
       </Field>
       <div className="sm:col-span-2">
         <Field label="Thumbnail">

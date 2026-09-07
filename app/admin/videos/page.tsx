@@ -2,9 +2,11 @@
 
 import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { ThumbnailUpload } from '@/components/ThumbnailUpload';
 import { Modal } from '@/components/Modal';
-import { buildBoardTree, idsWithChildren, ancestorIds, ancestorTitles, type BoardNode } from '@/lib/boardTree';
+import { CascadingBoardSelect } from '@/components/CascadingBoardSelect';
+import { buildBoardTree, idsWithChildren, type BoardNode } from '@/lib/boardTree';
 
 type Board = { id: string; title: string; parent_id: string | null; visibility?: 'universal' | 'restricted' };
 type Resource = { id: string; title: string; url: string; sort_order: number };
@@ -102,80 +104,10 @@ function providerBadge(provider: string): { label: string; className: string } {
   }
 }
 
-/**
- * Board picker as a drill-down chain — one <select> per depth level
- * (top-level board, then its sub-boards, then *its* sub-boards, and so
- * on for however deep this particular branch actually goes) instead of
- * one flat list of every board in the whole tree with no indication of
- * which top-level board a deeply-nested one sits under. Whichever id is
- * currently selected anywhere in the chain becomes `value` immediately
- * (even if it still has children of its own) — picking a board that
- * turns out to have sub-boards just reveals the next level's select
- * rather than requiring a separate confirm step.
- */
-function CascadingBoardSelect({
-  boards,
-  value,
-  onChange,
-}: {
-  boards: Board[];
-  value: string;
-  onChange: (boardId: string) => void;
-}) {
-  const byParent = useMemo(() => {
-    const map = new Map<string | null, Board[]>();
-    for (const b of boards) {
-      if (!map.has(b.parent_id)) map.set(b.parent_id, []);
-      map.get(b.parent_id)!.push(b);
-    }
-    for (const list of map.values()) list.sort((a, b) => a.title.localeCompare(b.title));
-    return map;
-  }, [boards]);
-
-  // The full root-to-selected path, reconstructed from the tree itself
-  // (not from local UI state) — so it stays correct no matter which
-  // level's <select> just fired the change.
-  const chain = useMemo(() => (value ? [...ancestorIds(boards, value), value] : []), [boards, value]);
-
-  const levels: { parentId: string | null; options: Board[]; selectedId: string }[] = [];
-  let parentId: string | null = null;
-  for (let depth = 0; ; depth++) {
-    const options = byParent.get(parentId) ?? [];
-    if (options.length === 0) break;
-    const selectedId = chain[depth] ?? '';
-    levels.push({ parentId, options, selectedId });
-    if (!selectedId) break; // nothing chosen at this level yet — stop, no deeper level to show
-    parentId = selectedId;
-  }
-
-  return (
-    <div className="space-y-1.5">
-      {levels.map((level, depth) => (
-        <select
-          key={level.parentId ?? 'root'}
-          value={level.selectedId}
-          onChange={(e) => onChange(e.target.value)}
-          className="input"
-          required={depth === 0}
-        >
-          <option value="">{depth === 0 ? '— Select a top-level board —' : '— Select a sub-board —'}</option>
-          {level.options.map((b) => (
-            <option key={b.id} value={b.id}>
-              {b.title}
-            </option>
-          ))}
-        </select>
-      ))}
-      {value && (
-        <p className="font-mono text-[10px] uppercase tracking-widest text-ink-faint">
-          {[...ancestorTitles(boards, value), boards.find((b) => b.id === value)?.title].filter(Boolean).join(' › ')}
-        </p>
-      )}
-    </div>
-  );
-}
-
 export default function AdminVideosPage() {
+  const searchParams = useSearchParams();
+  const boardFromQuery = searchParams.get('board');
+
   const [videos, setVideos] = useState<Video[]>([]);
   const [boards, setBoards] = useState<Board[]>([]);
   const [loading, setLoading] = useState(true);
@@ -387,6 +319,14 @@ export default function AdminVideosPage() {
   useEffect(() => {
     load();
   }, []);
+
+  // Deep-link support: /admin/videos?board=<id> (used by the "+ Class"
+  // button on a board's row in the Boards admin page) pre-selects that
+  // board in the create form instead of making the admin re-drill down
+  // through the same cascading picker they just navigated away from.
+  useEffect(() => {
+    if (boardFromQuery) setBoardId(boardFromQuery);
+  }, [boardFromQuery]);
 
   async function createVideo(e: React.FormEvent) {
     e.preventDefault();

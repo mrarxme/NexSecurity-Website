@@ -116,6 +116,26 @@ function formatTime(totalSeconds: number): string {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
+// Bunny's embed player accepts autoplay/muted as URL params directly
+// (https://docs.bunny.net/docs/stream-embedding-videos) — far more
+// reliable than racing player.js's own readiness to call play()
+// ourselves. muted=true has to go alongside autoplay=true: browsers
+// block autoplay-WITH-sound outright, so requesting autoplay without it
+// would just silently fail to start rather than half-working. `url`
+// already carries a short-lived signed token in its own query string
+// (see /api/video/[id]/play), so this parses it rather than
+// string-concatenating a second `?`.
+function withBunnyAutoplay(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    parsed.searchParams.set('autoplay', 'true');
+    parsed.searchParams.set('muted', 'true');
+    return parsed.toString();
+  } catch {
+    return rawUrl;
+  }
+}
+
 export function VideoPlayer({
   videoId,
   initialUrl,
@@ -169,6 +189,11 @@ export function VideoPlayer({
   // async getCurrentTime callback.
   const [resumeSeconds, setResumeSeconds] = useState<number | null>(initialResumeSeconds ?? null);
   const resumeAppliedRef = useRef(false);
+  // Guards the one-time autoplay-muted kick per provider (mp4/m3u8 path
+  // below) — YouTube's own playerVars.autoplay handles itself, and Bunny
+  // gets autoplay via a URL param (see withBunnyAutoplay), so this ref is
+  // only actually read by the native <video> path.
+  const autoplayAttemptedRef = useRef(false);
   const ytCurrentTimeRef = useRef(0);
   const ytDurationRef = useRef(0);
   const bunnyPositionRef = useRef(0);
@@ -509,6 +534,14 @@ export function VideoPlayer({
         disablekb: 1, // keyboard handled by our own onKeyDown below
         modestbranding: 1,
         origin: window.location.origin,
+        // Autoplay on landing, muted — every major browser blocks
+        // autoplay-WITH-sound outright (this isn't a bug to work around,
+        // it's platform policy), so muted is what makes autoplay actually
+        // start at all instead of silently doing nothing. The volume
+        // control in the bar below still works normally — one click
+        // unmutes once playback's already going.
+        autoplay: 1,
+        mute: 1,
       },
       events: {
         onReady: (e) => {
@@ -532,6 +565,11 @@ export function VideoPlayer({
               ytCurrentTimeRef.current = resumeSeconds;
             }
           }
+          // Belt-and-suspenders: playerVars.autoplay should already start
+          // this, but calling it explicitly too costs nothing and covers
+          // any browser/embed edge case where the declarative flag alone
+          // doesn't fire inside an iframe.
+          e.target.playVideo();
         },
         onStateChange: (e) => {
           setYtPlaying(e.data === window.YT?.PlayerState.PLAYING);
@@ -617,6 +655,20 @@ export function VideoPlayer({
           ytCurrentTimeRef.current = resumeSeconds;
           setYtCurrentTime(resumeSeconds);
         }
+      }
+      // Autoplay on landing, muted — same reasoning as the YouTube path
+      // above: browsers flat-out block autoplay-with-sound, so this is
+      // what makes it actually start instead of sitting on the first
+      // frame until someone clicks. The volume control below still
+      // unmutes normally with one click once it's playing.
+      if (!autoplayAttemptedRef.current) {
+        autoplayAttemptedRef.current = true;
+        v!.muted = true;
+        v!.play().catch(() => {
+          // Some browser/embed combo still refused — the big play button
+          // overlay (rendered whenever !ytPlaying) is right there as the
+          // fallback, same as if autoplay had never been attempted.
+        });
       }
     }
     function onTimeUpdate() {
@@ -1185,7 +1237,7 @@ export function VideoPlayer({
         // Bunny's configured "Allowed Referrers".
         <iframe
           ref={iframeRef}
-          src={url}
+          src={withBunnyAutoplay(url)}
           loading="lazy"
           allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture; clipboard-write; web-share"
           allowFullScreen
