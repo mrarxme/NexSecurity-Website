@@ -175,10 +175,21 @@ export function VideoPlayer({
   const isYoutube = provider === 'youtube';
   const isMp4 = provider === 'mp4';
   const isM3u8 = provider === 'm3u8';
+  // "Direct Stream URL" (provider='mp4') is really just "any file URL the
+  // admin pasted in" — some CDNs serve perfectly public, unprotected HLS
+  // with no Referer requirement at all, so there's nothing for the
+  // m3u8-with-Referer provider or its hls-proxy to add there; the admin
+  // pastes the .m3u8 straight into this provider instead, and it needs
+  // the exact same hls.js treatment as the m3u8 provider gets — just
+  // fed the raw url directly, with no proxy in front of it (see isHls'
+  // effect below, and note play/route.ts already returns source_ref
+  // as-is, unproxied, for this provider).
+  const isDirectHls = isMp4 && /\.m3u8(?:[?#]|$)/i.test(url ?? '');
+  const isHls = isM3u8 || isDirectHls;
   // mp4 and m3u8 both play through the same plain <video> element and
   // the same custom control bar below — they only differ in how the
   // source gets loaded into that element (a plain `src=` vs hls.js). See
-  // the two effects that read isMp4/isM3u8 individually further down.
+  // the two effects that read isMp4/isHls individually further down.
   const isNativeVideo = isMp4 || isM3u8;
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -230,7 +241,7 @@ export function VideoPlayer({
   const ytPlayerRef = useRef<YtPlayerInstance | null>(null);
   const ytSeekingRef = useRef(false);
 
-  // --- Direct MP4 (native <video>) state ---
+  // --- Direct Stream (native <video>) state ---
   // Reuses the same yt* state above the custom control bar already reads
   // from — this component was written so those represent "custom-bar
   // media state" generically, fed either by YouTube's IFrame API (above)
@@ -660,7 +671,7 @@ export function VideoPlayer({
     return () => clearInterval(interval);
   }, [isYoutube, isNativeVideo, ytPlaying, reportProgress]);
 
-  // --- Direct MP4 / m3u8: wire native <video> events into the same media
+  // --- Direct Stream / m3u8: wire native <video> events into the same media
   // state the custom control bar reads (see the comment by mp4VideoRef
   // above). No polling needed here — timeupdate/progress/waiting/playing
   // are all real push events, unlike the YouTube IFrame API above. Works
@@ -780,16 +791,20 @@ export function VideoPlayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isNativeVideo, url]);
 
-  // --- HLS (.m3u8 with a custom Referer, proxied — see
-  // app/api/video/[id]/hls-proxy/route.ts for why the proxy exists):
-  // hls.js does the actual demuxing/MSE feeding wherever native HLS isn't
-  // supported (everywhere except Safari); Safari's media engine already
-  // understands .m3u8 directly, so it gets a plain `src=` like mp4 does.
-  // Either way `url` here is already this app's own hls-proxy endpoint,
-  // never the admin's original CDN URL — the browser never learns the
-  // real source or the Referer it took to reach it.
+  // --- HLS playback — two different providers land here:
+  //   - 'm3u8' (with a custom Referer, proxied — see
+  //     app/api/video/[id]/hls-proxy/route.ts for why the proxy exists):
+  //     `url` is already this app's own hls-proxy endpoint, never the
+  //     admin's original CDN URL — the browser never learns the real
+  //     source or the Referer it took to reach it.
+  //   - 'mp4' ("Direct Stream URL") when the admin pasted a .m3u8 link
+  //     directly rather than an actual video file — some CDNs serve
+  //     perfectly public HLS with no Referer needed at all, so `url`
+  //     here is just that raw CDN link, unproxied (isDirectHls above).
+  // Either way it's the same hls.js wiring from here on — isHls covers
+  // both.
   useEffect(() => {
-    if (!isM3u8 || !url) return;
+    if (!isHls || !url) return;
     const v = mp4VideoRef.current;
     if (!v) return;
 
@@ -888,7 +903,7 @@ export function VideoPlayer({
       setQualityState('auto');
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isM3u8, url]);
+  }, [isHls, url]);
 
   function showHint(text: string) {
     setHint(text);
@@ -1064,12 +1079,13 @@ export function VideoPlayer({
   // of this function; see https://developers.google.com/youtube/iframe_api_reference
   // ("Deprecations and changes"). It's still called for the rare case
   // where the embed itself reports more than one real level (see the
-  // qualityLevels.length > 1 branch below) — best-effort only. For m3u8,
+  // qualityLevels.length > 1 branch below) — best-effort only. For HLS
+  // (m3u8 provider or a direct .m3u8 URL under mp4 — see isHls above),
   // this is the real thing: hls.currentLevel actually switches the
   // rendition immediately — no platform restriction like YouTube's,
-  // since this app controls both the player and the proxy serving it.
+  // since this app controls the player end-to-end either way.
   function changeQuality(level: string) {
-    if (isM3u8) {
+    if (isHls) {
       const hls = hlsRef.current;
       if (hls) {
         hls.currentLevel = level === 'auto' ? -1 : (hlsLevelIndexRef.current.get(level) ?? -1);
@@ -1318,7 +1334,7 @@ export function VideoPlayer({
             // were a single playable file.
             <video
               ref={mp4VideoRef}
-              src={isM3u8 ? undefined : url}
+              src={isHls ? undefined : url}
               playsInline
               preload="metadata"
               controlsList="nodownload"
@@ -1542,7 +1558,7 @@ export function VideoPlayer({
                         </span>
                       </button>
                       <p className="px-3.5 pb-1.5 pt-0.5 text-[10px] leading-snug text-white/35">
-                        {isM3u8
+                        {isHls
                           ? qualityLevels.length > 1
                             ? 'Auto picks the best resolution for your connection — or choose one yourself.'
                             : 'This stream only has one rendition available.'
@@ -1619,7 +1635,7 @@ export function VideoPlayer({
                             <span className="text-white/40">— currently playing</span>
                           </p>
                           <p className="mt-1.5 text-[10px] leading-snug text-white/40">
-                            {isM3u8
+                            {isHls
                               ? 'This stream only has one rendition available, so there is nothing to switch between.'
                               : isMp4
                                 ? 'This is a single video file, uploaded at one fixed quality — there is nothing to switch between.'

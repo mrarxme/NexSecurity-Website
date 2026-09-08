@@ -61,8 +61,14 @@ function youtubeWatchUrlFromSourceRef(sourceRef: string): string {
   return `https://www.youtube.com/watch?v=${sourceRef}`;
 }
 
-// mp4: source_ref *is* the playable URL — nothing to parse out of an
-// embed page, just make sure it's a real https URL before it's saved.
+// mp4 ("Direct Stream URL"): source_ref *is* the playable URL — nothing
+// to parse out of an embed page, just make sure it's a real https URL
+// before it's saved. Despite the field's original name, this URL doesn't
+// have to be an actual .mp4 file — a public, unprotected .m3u8 works
+// here too (VideoPlayer.tsx detects the extension itself and hands it to
+// hls.js automatically); this provider is really just "any direct file
+// URL", mp4 or m3u8. Use the 'm3u8' provider instead only when the CDN
+// actually requires a Referer header to serve it.
 function parseMp4Url(input: string): string | null {
   const trimmed = input.trim();
   try {
@@ -96,7 +102,7 @@ function providerBadge(provider: string): { label: string; className: string } {
     case 'youtube':
       return { label: 'YouTube', className: 'text-warn' };
     case 'mp4':
-      return { label: 'Direct MP4', className: 'text-signal-glow' };
+      return { label: 'Direct Stream', className: 'text-signal-glow' };
     case 'm3u8':
       return { label: 'm3u8 with Referer', className: 'text-signal-glow' };
     default:
@@ -348,7 +354,7 @@ export default function AdminVideosPage() {
             ? "Couldn't read that as a YouTube link. Paste the full video URL (youtube.com/watch?v=... or youtu.be/...) or just the 11-character video id."
             : createProvider === 'm3u8'
               ? "Couldn't read that as an HLS playlist URL. It needs to be a full https link straight to the .m3u8 file."
-              : "Couldn't read that as a direct video URL. It needs to be a full https link straight to the .mp4 file."
+              : "Couldn't read that as a direct stream URL. It needs to be a full https link straight to the video file or .m3u8 playlist."
       );
       return;
     }
@@ -473,7 +479,7 @@ export default function AdminVideosPage() {
                     setEmbedInput('');
                   }}
                 />
-                Direct MP4 URL
+                Direct Stream URL
               </label>
               <label className="flex items-center gap-1.5 text-sm text-ink">
                 <input
@@ -500,7 +506,7 @@ export default function AdminVideosPage() {
                   ? 'YouTube video URL'
                   : createProvider === 'm3u8'
                     ? 'HLS playlist URL (.m3u8)'
-                    : 'Direct video URL (.mp4)'
+                    : 'Direct video URL (.mp4 or public .m3u8)'
             }
           >
             <input
@@ -514,7 +520,7 @@ export default function AdminVideosPage() {
                     ? 'https://www.youtube.com/watch?v=… (make sure it is Unlisted, not Public)'
                     : createProvider === 'm3u8'
                       ? 'https://example.com/path/playlist.m3u8'
-                      : 'https://example.com/path/video.mp4'
+                      : 'https://example.com/path/video.mp4 (or .m3u8, if it needs no Referer)'
               }
               className="input font-mono text-xs"
             />
@@ -711,7 +717,7 @@ function VideoEditPanel({
             ? "Couldn't read that as a YouTube link. Paste the video URL or id to switch providers."
             : editProvider === 'm3u8'
               ? "Couldn't read that as an HLS playlist URL. Paste a full https .m3u8 link to switch providers."
-              : "Couldn't read that as a direct video URL. Paste a full https .mp4 link to switch providers."
+              : "Couldn't read that as a direct stream URL. Paste a full https link to switch providers."
       );
       return;
     }
@@ -842,7 +848,7 @@ function VideoEditPanel({
                     setEmbedInput(video.provider === 'mp4' ? video.source_ref : '');
                   }}
                 />
-                Direct MP4 URL
+                Direct Stream URL
               </label>
               <label className="flex items-center gap-1.5 text-sm text-ink">
                 <input
@@ -868,7 +874,7 @@ function VideoEditPanel({
                 ? 'YouTube video URL'
                 : editProvider === 'm3u8'
                   ? 'HLS playlist URL (.m3u8)'
-                  : 'Direct video URL (.mp4)'
+                  : 'Direct video URL (.mp4 or public .m3u8)'
           }
         >
           <input
