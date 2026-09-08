@@ -28,6 +28,13 @@ type PlayerJsInstance = {
   getCurrentTime: (cb: (seconds: number) => void) => void;
   setCurrentTime: (seconds: number) => void;
   getDuration: (cb: (seconds: number) => void) => void;
+  // Standard player.js spec methods (https://github.com/embedplus/player.js
+  // — Bunny's embed implements this spec) — used once, right after
+  // 'ready', to make sure autoplay never starts muted. Optional/best-effort
+  // the same way setPlaybackRate below is: harmless no-op if a given
+  // embed doesn't implement them.
+  mute?: () => void;
+  unmute?: () => void;
   // Not part of the documented player.js/Bunny spec — calling it is a
   // harmless no-op if unsupported, so it's used as a best-effort "try it,
   // don't rely on it" call. See the space-hold handler below.
@@ -561,6 +568,10 @@ export function VideoPlayer({
     const player = new window.playerjs.Player(iframeRef.current);
     playerRef.current = player;
     player.on('ready', () => {
+      // Force unmuted — autoplay should always start with sound, on
+      // every provider, never quietly muted. Bunny's own player would
+      // otherwise sometimes decide on its own to autoplay muted.
+      player.unmute?.();
       player.on('play', () => {
         isPlayingRef.current = true;
       });
@@ -690,21 +701,11 @@ export function VideoPlayer({
           // any browser/embed edge case where the declarative flag alone
           // doesn't fire inside an iframe.
           e.target.playVideo();
-          // The IFrame API has no promise/event for "autoplay was
-          // blocked" — so this just checks shortly after whether
-          // playback actually took. Still not PLAYING (and not
-          // legitimately buffering) means the browser silently refused
-          // sound-on autoplay; muting and retrying is the only way left
-          // to still start automatically.
-          setTimeout(() => {
-            const state = e.target.getPlayerState?.();
-            const stillNotPlaying = state !== window.YT?.PlayerState.PLAYING && state !== window.YT?.PlayerState.BUFFERING;
-            if (stillNotPlaying && !e.target.isMuted()) {
-              e.target.mute();
-              setYtMuted(true);
-              e.target.playVideo();
-            }
-          }, 800);
+          // Deliberately NO muted-autoplay fallback here: if the browser
+          // silently refuses sound-on autoplay, the class just stays
+          // paused on the play-button overlay instead of quietly playing
+          // muted — one click starts it normally, with sound, same as
+          // the native <video> path above.
         },
         onStateChange: (e) => {
           setYtPlaying(e.data === window.YT?.PlayerState.PLAYING);
@@ -797,26 +798,22 @@ export function VideoPlayer({
           setYtCurrentTime(resumeSeconds);
         }
       }
-      // Autoplay on landing — WITH sound first. Browsers only block
+      // Autoplay on landing — WITH sound. Browsers only block
       // autoplay-with-sound when the site doesn't have "media engagement"
       // with this visitor yet (roughly: they haven't played sound here
       // before) — for a returning student who's already watched classes
-      // with sound on, this genuinely just plays normally. Only if the
-      // browser actually refuses (.play() rejects) do we fall back to
-      // starting muted, purely so playback still begins automatically
-      // instead of sitting frozen on frame one; the volume control below
-      // unmutes normally with one click either way.
+      // with sound on, this genuinely just plays normally. If the browser
+      // does refuse it, we deliberately do NOT fall back to a muted
+      // autoplay — that used to auto-mute the class without the student
+      // noticing. Instead it just stays paused on the big play-button
+      // overlay, same as if autoplay had never been attempted; one click
+      // starts it normally, with sound.
       if (!autoplayAttemptedRef.current) {
         autoplayAttemptedRef.current = true;
         v!.muted = false;
         v!.play().catch(() => {
-          v!.muted = true;
-          setYtMuted(true);
-          v!.play().catch(() => {
-            // Even muted autoplay was refused — the big play button
-            // overlay (rendered whenever !ytPlaying) is right there as
-            // the fallback, same as if autoplay had never been attempted.
-          });
+          // Refused — left paused (unmuted) rather than silently
+          // retrying muted. The play-button overlay handles it from here.
         });
       }
     }
