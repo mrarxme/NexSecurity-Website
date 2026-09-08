@@ -106,6 +106,24 @@ const PROGRESS_SAVE_MS = 15 * 1000; // "resume playback" checkpoint cadence
 const CTRL_BTN_CLASS =
   'flex items-center justify-center rounded-lg p-1.5 text-white/90 transition hover:bg-white/10 hover:text-white';
 
+// Branded loading indicator — a thin ring in the site's signal-blue
+// spins on top of a soft pulsing glow behind it, instead of a bare
+// generic spinner or plain text with nothing to look at. Shared by the
+// pre-player "verifying access" state and the YouTube/mp4 buffering
+// overlay so the whole player only ever shows ONE loading motif.
+function PlayerLoadingSpinner({ label }: { label?: string }) {
+  return (
+    <div className="flex flex-col items-center gap-3">
+      <div className="relative h-10 w-10">
+        <span className="nex-player-glow absolute inset-0 rounded-full bg-signal/25 blur-lg" />
+        <span className="absolute inset-0 rounded-full border-2 border-white/10" />
+        <span className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-signal border-r-signal" />
+      </div>
+      {label && <span className="font-mono text-xs uppercase tracking-widest text-ink-faint">{label}</span>}
+    </div>
+  );
+}
+
 function formatTime(totalSeconds: number): string {
   if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return '0:00';
   const h = Math.floor(totalSeconds / 3600);
@@ -116,20 +134,19 @@ function formatTime(totalSeconds: number): string {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
-// Bunny's embed player accepts autoplay/muted as URL params directly
-// (https://docs.bunny.net/docs/stream-embedding-videos) — far more
-// reliable than racing player.js's own readiness to call play()
-// ourselves. muted=true has to go alongside autoplay=true: browsers
-// block autoplay-WITH-sound outright, so requesting autoplay without it
-// would just silently fail to start rather than half-working. `url`
-// already carries a short-lived signed token in its own query string
-// (see /api/video/[id]/play), so this parses it rather than
-// string-concatenating a second `?`.
+// Bunny's embed player accepts autoplay as a URL param directly
+// (https://docs.bunny.net/docs/stream-embedding-videos). Deliberately
+// autoplay-ONLY, no muted=true: Bunny's own player (like YouTube's)
+// generally already knows how to fall back to muted itself when the
+// browser blocks sound-on autoplay, and forcing muted here would mean
+// it NEVER even tries with sound for a visitor the browser would
+// actually have allowed it for. `url` already carries a short-lived
+// signed token in its own query string (see /api/video/[id]/play), so
+// this parses it rather than string-concatenating a second `?`.
 function withBunnyAutoplay(rawUrl: string): string {
   try {
     const parsed = new URL(rawUrl);
     parsed.searchParams.set('autoplay', 'true');
-    parsed.searchParams.set('muted', 'true');
     return parsed.toString();
   } catch {
     return rawUrl;
@@ -189,10 +206,11 @@ export function VideoPlayer({
   // async getCurrentTime callback.
   const [resumeSeconds, setResumeSeconds] = useState<number | null>(initialResumeSeconds ?? null);
   const resumeAppliedRef = useRef(false);
-  // Guards the one-time autoplay-muted kick per provider (mp4/m3u8 path
-  // below) — YouTube's own playerVars.autoplay handles itself, and Bunny
-  // gets autoplay via a URL param (see withBunnyAutoplay), so this ref is
-  // only actually read by the native <video> path.
+  // Guards the one-time autoplay kick per provider (mp4/m3u8 path
+  // below) — YouTube's own playerVars.autoplay + onReady fallback handle
+  // themselves, and Bunny gets autoplay via a URL param (see
+  // withBunnyAutoplay), so this ref is only actually read by the native
+  // <video> path.
   const autoplayAttemptedRef = useRef(false);
   const ytCurrentTimeRef = useRef(0);
   const ytDurationRef = useRef(0);
@@ -534,14 +552,13 @@ export function VideoPlayer({
         disablekb: 1, // keyboard handled by our own onKeyDown below
         modestbranding: 1,
         origin: window.location.origin,
-        // Autoplay on landing, muted — every major browser blocks
-        // autoplay-WITH-sound outright (this isn't a bug to work around,
-        // it's platform policy), so muted is what makes autoplay actually
-        // start at all instead of silently doing nothing. The volume
-        // control in the bar below still works normally — one click
-        // unmutes once playback's already going.
+        // Autoplay on landing, WITH sound first — see the matching
+        // comment on the native <video> path below for why this isn't
+        // automatically blocked for every visitor. onReady below checks
+        // shortly after whether it actually started; if the browser
+        // silently refused, THEN it falls back to muted so playback still
+        // begins automatically either way.
         autoplay: 1,
-        mute: 1,
       },
       events: {
         onReady: (e) => {
@@ -570,6 +587,21 @@ export function VideoPlayer({
           // any browser/embed edge case where the declarative flag alone
           // doesn't fire inside an iframe.
           e.target.playVideo();
+          // The IFrame API has no promise/event for "autoplay was
+          // blocked" — so this just checks shortly after whether
+          // playback actually took. Still not PLAYING (and not
+          // legitimately buffering) means the browser silently refused
+          // sound-on autoplay; muting and retrying is the only way left
+          // to still start automatically.
+          setTimeout(() => {
+            const state = e.target.getPlayerState?.();
+            const stillNotPlaying = state !== window.YT?.PlayerState.PLAYING && state !== window.YT?.PlayerState.BUFFERING;
+            if (stillNotPlaying && !e.target.isMuted()) {
+              e.target.mute();
+              setYtMuted(true);
+              e.target.playVideo();
+            }
+          }, 800);
         },
         onStateChange: (e) => {
           setYtPlaying(e.data === window.YT?.PlayerState.PLAYING);
@@ -656,18 +688,26 @@ export function VideoPlayer({
           setYtCurrentTime(resumeSeconds);
         }
       }
-      // Autoplay on landing, muted — same reasoning as the YouTube path
-      // above: browsers flat-out block autoplay-with-sound, so this is
-      // what makes it actually start instead of sitting on the first
-      // frame until someone clicks. The volume control below still
-      // unmutes normally with one click once it's playing.
+      // Autoplay on landing — WITH sound first. Browsers only block
+      // autoplay-with-sound when the site doesn't have "media engagement"
+      // with this visitor yet (roughly: they haven't played sound here
+      // before) — for a returning student who's already watched classes
+      // with sound on, this genuinely just plays normally. Only if the
+      // browser actually refuses (.play() rejects) do we fall back to
+      // starting muted, purely so playback still begins automatically
+      // instead of sitting frozen on frame one; the volume control below
+      // unmutes normally with one click either way.
       if (!autoplayAttemptedRef.current) {
         autoplayAttemptedRef.current = true;
-        v!.muted = true;
+        v!.muted = false;
         v!.play().catch(() => {
-          // Some browser/embed combo still refused — the big play button
-          // overlay (rendered whenever !ytPlaying) is right there as the
-          // fallback, same as if autoplay had never been attempted.
+          v!.muted = true;
+          setYtMuted(true);
+          v!.play().catch(() => {
+            // Even muted autoplay was refused — the big play button
+            // overlay (rendered whenever !ytPlaying) is right there as
+            // the fallback, same as if autoplay had never been attempted.
+          });
         });
       }
     }
@@ -1042,23 +1082,24 @@ export function VideoPlayer({
     setSettingsPanel('main');
   }
 
-  function toggleMute() {
+  function toggleMute(): boolean {
     if (isNativeVideo) {
       const v = mp4VideoRef.current;
-      if (!v) return;
+      if (!v) return ytMuted;
       v.muted = !v.muted;
       setYtMuted(v.muted);
-      return;
+      return v.muted;
     }
     const yp = ytPlayerRef.current;
-    if (!yp) return;
+    if (!yp) return ytMuted;
     if (yp.isMuted()) {
       yp.unMute();
       setYtMuted(false);
-    } else {
-      yp.mute();
-      setYtMuted(true);
+      return false;
     }
+    yp.mute();
+    setYtMuted(true);
+    return true;
   }
 
   function changeVolume(value: number) {
@@ -1155,6 +1196,9 @@ export function VideoPlayer({
       } else if (e.key.toLowerCase() === 'f') {
         e.preventDefault();
         toggleFullscreen();
+      } else if (e.key.toLowerCase() === 'm') {
+        e.preventDefault();
+        showHint(toggleMute() ? 'Muted' : 'Unmuted');
       } else if (e.code === 'Space') {
         e.preventDefault();
         if (spaceDownRef.current) return; // ignore OS key-repeat
@@ -1207,9 +1251,7 @@ export function VideoPlayer({
 
       {loading && (
         <div className="absolute inset-0 flex items-center justify-center">
-          <span className="font-mono text-xs uppercase tracking-widest text-ink-faint">
-            Verifying access…
-          </span>
+          <PlayerLoadingSpinner label="Verifying access…" />
         </div>
       )}
 
@@ -1292,9 +1334,7 @@ export function VideoPlayer({
 
           {ytBuffering && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-vault-950/30">
-              <span className="font-mono text-xs uppercase tracking-widest text-white/80">
-                Loading…
-              </span>
+              <PlayerLoadingSpinner />
             </div>
           )}
 

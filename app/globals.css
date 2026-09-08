@@ -92,6 +92,25 @@ select option {
   color: #f3f6fc;
 }
 
+/* Pulsing glow behind the video player's loading spinner (see
+   PlayerLoadingSpinner in components/VideoPlayer.tsx) — the signal-blue
+   glow breathes in and out while the accompanying ring spins via
+   Tailwind's built-in animate-spin. */
+@keyframes nex-player-glow {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 0.75;
+    transform: scale(1.15);
+  }
+}
+.nex-player-glow {
+  animation: nex-player-glow 1.6s ease-in-out infinite;
+}
+
 :focus-visible {
   outline: 2px solid #417af8;
   outline-offset: 2px;
