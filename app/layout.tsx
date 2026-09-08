@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { Manrope, JetBrains_Mono } from 'next/font/google';
 import { RegisterServiceWorker } from '@/components/RegisterServiceWorker';
 import { SitePopup } from '@/components/SitePopup';
+import { NotificationPrompt } from '@/components/NotificationPrompt';
 import './globals.css';
 
 const manrope = Manrope({
@@ -32,6 +33,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen bg-vault-950 font-body text-ink antialiased">
         <RegisterServiceWorker />
         <SitePopup />
+        <NotificationPrompt />
         {children}
       </body>
     </html>

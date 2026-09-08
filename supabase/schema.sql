@@ -324,6 +324,25 @@ create table if not exists public.user_popup_views (
   last_shown_at timestamptz not null default now()
 );
 
+-- ---------------------------------------------------------------------------
+-- 13. push_subscriptions — one row per browser/device granted
+--     notification permission, tied to the account it was subscribed
+--     under. `endpoint` (the push service URL the browser gave us) is
+--     the natural unique key: different per browser/device/profile.
+-- ---------------------------------------------------------------------------
+create table if not exists public.push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  user_email text not null,
+  endpoint text not null unique,
+  p256dh text not null,
+  auth text not null,
+  device_label text,
+  created_at timestamptz not null default now(),
+  last_used_at timestamptz not null default now()
+);
+
+create index if not exists idx_push_subscriptions_user on public.push_subscriptions (lower(user_email));
+
 -- ============================================================================
 -- ROW LEVEL SECURITY
 -- ============================================================================
@@ -342,6 +361,7 @@ alter table public.video_progress enable row level security;
 alter table public.board_user_access enable row level security;
 alter table public.site_popup_settings enable row level security;
 alter table public.user_popup_views enable row level security;
+alter table public.push_subscriptions enable row level security;
 
 -- Helper: is the currently authenticated user an ACTIVE authorized user?
 create or replace function public.is_authorized() returns boolean as $$
@@ -492,6 +512,17 @@ create policy site_popup_settings_admin_write on public.site_popup_settings
 -- row — same shape as video_progress above.
 drop policy if exists user_popup_views_self on public.user_popup_views;
 create policy user_popup_views_self on public.user_popup_views
+  for all using (
+    lower(user_email) = lower(coalesce(auth.jwt() ->> 'email', '')) or public.is_admin()
+  )
+  with check (
+    lower(user_email) = lower(coalesce(auth.jwt() ->> 'email', '')) or public.is_admin()
+  );
+
+-- push_subscriptions: same self-access shape as video_progress /
+-- user_popup_views above.
+drop policy if exists push_subscriptions_self on public.push_subscriptions;
+create policy push_subscriptions_self on public.push_subscriptions
   for all using (
     lower(user_email) = lower(coalesce(auth.jwt() ->> 'email', '')) or public.is_admin()
   )

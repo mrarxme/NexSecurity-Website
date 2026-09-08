@@ -4,6 +4,7 @@ import { createSupabaseAdminClient } from '@/lib/supabase/admin';
 import { videoSchema } from '@/lib/validation';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { logAuditEvent } from '@/lib/audit';
+import { notifyNewClass } from '@/lib/webPush';
 
 export const dynamic = 'force-dynamic';
 
@@ -64,6 +65,14 @@ export async function POST(request: NextRequest) {
   await logAuditEvent('ADMIN_ACTION', auth.user.email, data.id, {
     action: 'VIDEO_CREATED',
     title: data.title,
+  });
+
+  // Fire-and-forget: tell everyone who can see this board that a new
+  // class just went up. Never awaited — a slow push fan-out (or one dead
+  // subscription in it) should never delay the admin's own "created"
+  // response.
+  void notifyNewClass(parsed.data.board_id, data.title, data.id, auth.user.email).catch((err) => {
+    console.error('[push] new-class notification failed', err);
   });
 
   return NextResponse.json({ video: data }, { status: 201 });

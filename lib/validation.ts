@@ -171,3 +171,13 @@ export const popupSettingsSchema = z.object({
 });
 
 export const popupSettingsUpdateSchema = popupSettingsSchema.partial();
+
+// A browser's PushSubscription.toJSON() shape — exactly what
+// components/NotificationPrompt.tsx sends after subscribing.
+export const pushSubscriptionSchema = z.object({
+  endpoint: z.string().url(),
+  keys: z.object({
+    p256dh: z.string().min(1),
+    auth: z.string().min(1),
+  }),
+});

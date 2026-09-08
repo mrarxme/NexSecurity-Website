@@ -43,3 +43,42 @@ self.addEventListener('fetch', () => {
   // it — which is the actual correct behavior for a worker that exists
   // only to satisfy PWA installability, not to do anything with traffic.
 });
+
+// --- Web Push: new-class notifications -------------------------------
+// The only other job this worker does. A push message arrives here
+// (from app/api/admin/videos's notifyNewClass, via lib/webPush.ts) as a
+// plain JSON payload — this just displays it as a system notification;
+// it never touches the cache/fetch behavior above.
+self.addEventListener('push', (event) => {
+  let payload = { title: 'NexSecurity', body: '', url: '/' };
+  try {
+    if (event.data) payload = { ...payload, ...event.data.json() };
+  } catch {
+    // Not JSON for some reason — fall back to plain text rather than
+    // dropping the notification entirely.
+    if (event.data) payload.body = event.data.text();
+  }
+
+  event.waitUntil(
+    self.registration.showNotification(payload.title, {
+      body: payload.body,
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
+      data: { url: payload.url || '/' },
+    })
+  );
+});
+
+// Clicking the notification focuses an already-open tab on that class
+// if one exists, instead of always opening a new one.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = event.notification.data?.url || '/';
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientsArr) => {
+      const existing = clientsArr.find((c) => new URL(c.url).pathname === url);
+      if (existing) return existing.focus();
+      return self.clients.openWindow(url);
+    })
+  );
+});
