@@ -92,25 +92,6 @@ select option {
   color: #f3f6fc;
 }
 
-/* Pulsing glow behind the video player's loading spinner (see
-   PlayerLoadingSpinner in components/VideoPlayer.tsx) — the signal-blue
-   glow breathes in and out while the accompanying ring spins via
-   Tailwind's built-in animate-spin. */
-@keyframes nex-player-glow {
-  0%,
-  100% {
-    opacity: 0.35;
-    transform: scale(0.85);
-  }
-  50% {
-    opacity: 0.75;
-    transform: scale(1.15);
-  }
-}
-.nex-player-glow {
-  animation: nex-player-glow 1.6s ease-in-out infinite;
-}
-
 :focus-visible {
   outline: 2px solid #417af8;
   outline-offset: 2px;
@@ -134,6 +115,16 @@ select option {
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
+  }
+  /* Exception: the video player's own "is it loading" spinner (see
+     PlayerLoadingSpinner in components/VideoPlayer.tsx). Everywhere else
+     "reduce motion" should mean what it says, but a frozen spinner here
+     doesn't reduce motion for the viewer — it just makes a functional
+     status indicator look broken, with no way to tell "still loading"
+     apart from "stuck" until the video (or an error) actually appears. */
+  .nex-player-spin {
+    animation-duration: 0.9s !important;
+    animation-iteration-count: infinite !important;
   }
 }
 

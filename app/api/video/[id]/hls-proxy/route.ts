@@ -150,9 +150,20 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 
   if (!upstreamRes.ok && upstreamRes.status !== 206) {
     console.error('[hls-proxy] upstream fetch failed', upstreamRes.status, targetUrl);
+    // A 4xx from the CDN (403/404/410/…) is definitive — the Referer or
+    // token is rejected, and retrying the exact same request will just
+    // fail the exact same way again. Passing that real status straight
+    // through (instead of always answering 502) is what lets the
+    // player's own error handling (see the hls.js ERROR handler in
+    // components/VideoPlayer.tsx) tell "this is permanently broken" apart
+    // from "the CDN had a transient blip, worth retrying" — collapsing
+    // both into 502 here made every failure look retriable, so a
+    // genuinely broken video just kept silently retrying instead of
+    // ever showing the viewer an error.
+    const status = upstreamRes.status >= 400 && upstreamRes.status < 500 ? upstreamRes.status : 502;
     return NextResponse.json(
       { error: `Video stream is not currently available. (CDN ${upstreamRes.status})` },
-      { status: 502 }
+      { status }
     );
   }
 

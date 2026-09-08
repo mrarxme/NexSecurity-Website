@@ -143,11 +143,79 @@ function PlayerLoadingSpinner({ label }: { label?: string }) {
   return (
     <div className="flex flex-col items-center gap-3">
       <div className="relative h-10 w-10">
-        <span className="nex-player-glow absolute inset-0 rounded-full bg-signal/25 blur-lg" />
         <span className="absolute inset-0 rounded-full border-2 border-white/10" />
-        <span className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-signal border-r-signal" />
+        <span className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-signal border-r-signal nex-player-spin" />
       </div>
       {label && <span className="font-mono text-xs uppercase tracking-widest text-ink-faint">{label}</span>}
+    </div>
+  );
+}
+
+// Turns whatever raw string ended up in `error` — some are our own fixed
+// copy (see the setError() call sites below), others are passed straight
+// through from the /play API's { error: "..." } response — into an
+// actually actionable toast: what happened, in plain language, plus one
+// concrete thing to try. Falls back to just showing the raw text rather
+// than inventing an explanation for a message this doesn't recognize.
+function explainPlaybackError(raw: string): { title: string; message: string; fixLabel: string } {
+  const lower = raw.toLowerCase();
+  if (lower.includes('too many requests') || lower.includes('rate limit')) {
+    return {
+      title: 'Too many requests',
+      message: 'This class was requested too many times in a short window. Wait a few seconds and try again.',
+      fixLabel: 'Try again',
+    };
+  }
+  if (lower.includes('access denied') || lower.includes('not authorized') || lower.includes('restricted')) {
+    return {
+      title: "You don't have access to this class",
+      message: 'Your account may not be enrolled on this board, or your session may need refreshing.',
+      fixLabel: 'Refresh page',
+    };
+  }
+  if (lower.includes('broken') || lower.includes('expired') || lower.includes('cannot play') || lower.includes('not currently available')) {
+    return { title: 'This video failed to load', message: raw, fixLabel: 'Refresh page' };
+  }
+  return { title: 'Something went wrong', message: raw, fixLabel: 'Refresh page' };
+}
+
+// The "something's wrong" card — shown over the class's own thumbnail
+// (see the background layer in the main render below) instead of a bare
+// line of red text on black, with one button that actually does
+// something rather than just naming the problem and leaving the viewer
+// to guess what to do about it.
+function PlayerProblemToast({
+  title,
+  message,
+  fixLabel = 'Refresh page',
+  onFix,
+}: {
+  title: string;
+  message: string;
+  fixLabel?: string;
+  onFix?: () => void;
+}) {
+  return (
+    <div className="absolute inset-x-0 bottom-4 z-30 mx-auto w-[calc(100%-2rem)] max-w-md rounded-xl border border-white/10 bg-vault-950/90 p-4 text-left shadow-2xl backdrop-blur-md sm:bottom-6">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-danger/15 text-danger">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-ink">{title}</p>
+          <p className="mt-0.5 text-xs leading-relaxed text-ink-dim">{message}</p>
+          <button
+            onClick={onFix ?? (() => window.location.reload())}
+            className="mt-2.5 rounded-md bg-signal px-3 py-1.5 text-xs font-medium text-white transition hover:bg-signal-glow"
+          >
+            {fixLabel}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -186,11 +254,13 @@ export function VideoPlayer({
   initialUrl,
   initialProvider,
   initialResumeSeconds,
+  thumbnailUrl,
 }: {
   videoId: string;
   initialUrl?: string | null;
   initialProvider?: string | null;
   initialResumeSeconds?: number | null;
+  thumbnailUrl?: string | null;
 }) {
   const [url, setUrl] = useState<string | null>(initialUrl ?? null);
   const [provider, setProvider] = useState<string | null>(initialProvider ?? null);
@@ -871,9 +941,53 @@ export function VideoPlayer({
       hls = new Hls({ enableWorker: false });
       hls.loadSource(url);
       hls.attachMedia(v);
+      // hls.js marks plenty of genuinely transient hiccups "fatal" too —
+      // a single slow/dropped segment request during an ABR quality
+      // switch, a manifest reload that timed out once, momentary CDN
+      // flakiness — not just an actually-broken stream. hls.js's own
+      // docs recommend trying its built-in recovery calls before giving
+      // up: startLoad() for network errors, recoverMediaError() for
+      // media errors. Only after a few recovery attempts in a row fail
+      // to help do we actually tell the viewer to reload — this was
+      // previously calling that a dead stream on the very first fatal
+      // event, which is what made the "reload page" toast pop up on
+      // classes that would have kept playing fine on their own.
+      let networkRecoveries = 0;
+      let mediaRecoveries = 0;
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (!data.fatal) return;
+        const instance = hls;
+        if (!instance) return;
+        // A definitive HTTP client error (403/404/410/…) means retrying
+        // the exact same request will just fail the exact same way
+        // again — show the real problem right away instead of quietly
+        // retrying it first and only surfacing the error a couple of
+        // backoff cycles later (which, for a genuinely broken link,
+        // looked from the outside like "the error toast never shows").
+        const status = data.response?.code;
+        const isPermanentHttpError =
+          typeof status === 'number' && status >= 400 && status < 500 && status !== 408 && status !== 429;
+        if (!isPermanentHttpError) {
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRecoveries < 2) {
+            networkRecoveries++;
+            instance.startLoad();
+            return;
+          }
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveries < 2) {
+            mediaRecoveries++;
+            instance.recoverMediaError();
+            return;
+          }
+        }
         setError('This video failed to load. The stream link may be broken or expired.');
+      });
+      // A fragment actually made it into the buffer, so the connection
+      // is healthy right now — refills the recovery budget above rather
+      // than letting a handful of blips early in a 2-hour lecture
+      // permanently use it up for the rest of the video.
+      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+        networkRecoveries = 0;
+        mediaRecoveries = 0;
       });
       // Populates the same Speed/Quality settings menu the YouTube path
       // uses, driven by real variants this specific playlist advertises
@@ -1293,6 +1407,26 @@ export function VideoPlayer({
         />
       )}
 
+      {/* Class's own thumbnail as the backdrop for every "nothing is
+          playing yet" state (verifying access, revoked, failed) — same
+          idea as a native <video poster>, but also covering the iframe
+          providers (Bunny/YouTube) which have no poster attribute of
+          their own. Never shown once a provider actually has something
+          on screen — see the !loading && !error && !revoked guards below. */}
+      {(loading || error || revoked) && thumbnailUrl && (
+        <div
+          className="absolute inset-0 bg-cover bg-center"
+          style={{ backgroundImage: `url(${thumbnailUrl})` }}
+        >
+          {/* Plain semi-transparent overlay, not backdrop-blur — blurring
+              the whole frame behind the spinner every frame is expensive
+              (this is what made the spinner feel laggy after this was
+              first added), and a video thumbnail dims down to readable
+              contrast just fine without it. */}
+          <div className="absolute inset-0 bg-vault-950/70" />
+        </div>
+      )}
+
       {loading && (
         <div className="absolute inset-0 flex items-center justify-center">
           <PlayerLoadingSpinner label="Verifying access…" />
@@ -1300,22 +1434,22 @@ export function VideoPlayer({
       )}
 
       {revoked && !loading && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-vault-950/90 px-6 text-center backdrop-blur-sm">
-          <span className="font-mono text-xs uppercase tracking-widest text-danger">
-            Access revoked
-          </span>
-          <p className="max-w-xs text-xs text-ink-dim">
-            This session is no longer authorized to play this class. Reload the page if you
-            believe this is a mistake.
-          </p>
-        </div>
+        <PlayerProblemToast
+          title="Access revoked"
+          message="This session is no longer authorized to play this class. Reload the page if you believe this is a mistake."
+          fixLabel="Refresh page"
+        />
       )}
 
-      {error && !loading && !revoked && (
-        <div className="absolute inset-0 flex items-center justify-center px-6 text-center">
-          <span className="font-mono text-xs uppercase tracking-widest text-danger">{error}</span>
-        </div>
-      )}
+      {error &&
+        !loading &&
+        !revoked &&
+        (() => {
+          const explained = explainPlaybackError(error);
+          return (
+            <PlayerProblemToast title={explained.title} message={explained.message} fixLabel={explained.fixLabel} />
+          );
+        })()}
 
       {isBunny && url && !loading && !error && !revoked && (
         // A signed, ~10-minute embed token (see /api/video/[id]/play) —
@@ -1363,6 +1497,7 @@ export function VideoPlayer({
             <video
               ref={mp4VideoRef}
               src={isHls ? undefined : url}
+              poster={thumbnailUrl ?? undefined}
               playsInline
               preload="metadata"
               controlsList="nodownload"

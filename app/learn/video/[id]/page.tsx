@@ -38,7 +38,7 @@ export default async function VideoPage({ params }: { params: { id: string } }) 
   const { data: video } = await adminClient
     .from('videos')
     .select(
-      'id, title, description, download_url, provider, source_ref, board:board_id(id, title, published, parent_id), video_resources(id, title, url, sort_order)'
+      'id, title, description, download_url, provider, source_ref, thumbnail_url, board:board_id(id, title, published, parent_id), video_resources(id, title, url, sort_order)'
     )
     .eq('id', videoId)
     .maybeSingle();
@@ -169,6 +169,7 @@ export default async function VideoPage({ params }: { params: { id: string } }) 
               initialUrl={initialPlaybackUrl}
               initialProvider={video.provider}
               initialResumeSeconds={initialResumeSeconds}
+              thumbnailUrl={video.thumbnail_url}
             />
 
             <div className="mt-6 flex flex-wrap items-start justify-between gap-3">
