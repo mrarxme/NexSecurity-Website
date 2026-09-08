@@ -4,6 +4,8 @@ import { createSupabaseAdminClient } from '@/lib/supabase/admin';
 import { deviceDecisionSchema, uuidSchema } from '@/lib/validation';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { logAuditEvent } from '@/lib/audit';
+import { bestDeviceMatch } from '@/lib/deviceSimilarity';
+import type { DeviceSignals } from '@/lib/deviceSignals';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,7 +28,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
   const { data: devices, error } = await adminClient
     .from('user_devices')
     .select(
-      'id, device_id, ip_address, ip_history, device_label, status, label, approved_by, approved_at, first_seen, last_seen, created_at'
+      'id, device_id, ip_address, ip_history, device_label, status, label, approved_by, approved_at, first_seen, last_seen, created_at, signals'
     )
     .eq('user_id', parsedId.data)
     .order('last_seen', { ascending: false });
@@ -34,10 +36,44 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
   if (error) return NextResponse.json({ error: 'Could not load devices.' }, { status: 400 });
 
   const activeCutoff = Date.now() - ACTIVE_SESSION_WINDOW_MS;
-  const withActive = (devices ?? []).map((d) => ({
-    ...d,
-    is_active: d.status === 'authorized' && new Date(d.last_seen).getTime() >= activeCutoff,
-  }));
+  const all = devices ?? [];
+  const authorizedDevices = all.filter((d) => d.status === 'authorized');
+
+  // For every pending device, find the best-matching ALREADY
+  // AUTHORIZED device on this same account — this is what powers the
+  // "likely the same laptop, different browser" hint in the admin
+  // panel (see lib/deviceSimilarity.ts). Only pending rows need this;
+  // authorized/restricted/blocked ones aren't waiting on a decision.
+  const withActive = all.map((d) => {
+    const isPending = d.status === 'pending';
+    const match = isPending
+      ? bestDeviceMatch(
+          (d.signals ?? {}) as DeviceSignals,
+          authorizedDevices.map((o) => ({ id: o.id, signals: (o.signals ?? {}) as DeviceSignals }))
+        )
+      : null;
+    const matchedDevice = match ? authorizedDevices.find((o) => o.id === match.deviceRowId) : null;
+
+    // The raw `signals` blob (including the FingerprintJS visitorId) is
+    // only ever needed server-side to compute the comparison above —
+    // send the admin panel the derived hint, not the raw fingerprint
+    // data itself.
+    const { signals: _signals, ...rest } = d;
+
+    return {
+      ...rest,
+      is_active: d.status === 'authorized' && new Date(d.last_seen).getTime() >= activeCutoff,
+      likely_same_device: match
+        ? {
+            label: match.label,
+            score: match.score,
+            matched_signals: match.matchedSignals,
+            same_browser_fingerprint: match.sameBrowserFingerprint,
+            matched_device_label: matchedDevice?.label || matchedDevice?.device_label || null,
+          }
+        : null,
+    };
+  });
 
   return NextResponse.json({
     pending: withActive.filter((d) => d.status === 'pending'),

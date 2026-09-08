@@ -3,6 +3,7 @@ import { Manrope, JetBrains_Mono } from 'next/font/google';
 import { RegisterServiceWorker } from '@/components/RegisterServiceWorker';
 import { SitePopup } from '@/components/SitePopup';
 import { NotificationPrompt } from '@/components/NotificationPrompt';
+import { DeviceSignalCollector } from '@/components/DeviceSignalCollector';
 import './globals.css';
 
 const manrope = Manrope({
@@ -34,6 +35,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <RegisterServiceWorker />
         <SitePopup />
         <NotificationPrompt />
+        <DeviceSignalCollector />
         {children}
       </body>
     </html>

@@ -157,6 +157,36 @@ export const videoProgressSchema = z.object({
   duration_seconds: z.number().int().min(0).max(24 * 60 * 60).optional().nullable(),
 });
 
+// A comment posted on a class (video) page. Kept short and flat — no
+// nested replies (see supabase/migrations/0009_video_comments.sql) — so
+// a generous but bounded length is enough; long enough for a real
+// question/note, short enough that one comment can't become a wall of
+// text.
+export const videoCommentSchema = z.object({
+  body: z.string().trim().min(1).max(2000),
+});
+
+// Best-effort browser/hardware signals reported by
+// components/DeviceSignalCollector.tsx after sign-in, used only to help
+// an admin recognize "this pending device is probably the same laptop
+// as one you already authorized, just a different browser" — see
+// lib/deviceSimilarity.ts. Every field is optional: browsers vary in
+// what they're willing to share (Safari/Firefox withhold
+// device_memory entirely, for instance), and a client script failing
+// to collect one signal should never block reporting the rest.
+export const deviceSignalsSchema = z.object({
+  screen_width: z.number().int().min(0).max(20000).optional(),
+  screen_height: z.number().int().min(0).max(20000).optional(),
+  color_depth: z.number().int().min(0).max(64).optional(),
+  timezone: z.string().trim().max(100).optional(),
+  languages: z.array(z.string().trim().max(35)).max(10).optional(),
+  hardware_concurrency: z.number().int().min(0).max(256).optional(),
+  device_memory: z.number().min(0).max(1024).optional(),
+  max_touch_points: z.number().int().min(0).max(64).optional(),
+  platform: z.string().trim().max(100).optional(),
+  fingerprint_visitor_id: z.string().trim().max(64).optional(),
+});
+
 // The site-wide announcement popup, shown to authorized users on a
 // repeating interval (interval_hours = the "watch time" — how often the
 // same person is shown it again). Singleton settings row; see

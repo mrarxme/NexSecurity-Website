@@ -260,6 +260,16 @@ create table if not exists public.user_devices (
   first_seen timestamptz not null default now(),
   last_seen timestamptz not null default now(),
   created_at timestamptz not null default now(),
+  -- Best-effort browser/hardware signals (screen, timezone,
+  -- hardware_concurrency, device_memory, platform, languages,
+  -- max_touch_points, fingerprint_visitor_id) collected client-side and
+  -- reported via /api/device/signals. Used ONLY to show an admin a
+  -- "likely same physical device" hint when a user opens a second
+  -- browser on the same machine (cookies are browser-scoped, so
+  -- device_id alone can't tell that apart) — see
+  -- lib/deviceSimilarity.ts and supabase/migrations/0010_device_signals.sql.
+  -- Never used to auto-decide anything; a human always makes the call.
+  signals jsonb not null default '{}'::jsonb,
   unique (user_id, device_id)
 );
 

@@ -1370,6 +1370,16 @@ export function VideoPlayer({
 
     function onKeyUp(e: KeyboardEvent) {
       if (e.code !== 'Space') return;
+      // Same typing-target guard as onKeyDown: without this, a space
+      // pressed while focused in a text field (e.g. the comment box on
+      // the class page) never toggles playback on keydown (that's
+      // already guarded), but its matching keyup still fired
+      // unconditionally and DID toggle play/pause — because keydown
+      // never ran for it, spaceDownRef was never set, but this handler
+      // didn't check that either, so it just went straight to
+      // togglePlayPause(). Bailing out here the same way keydown does
+      // closes that gap.
+      if (isTypingTarget(e.target)) return;
       if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
       spaceDownRef.current = false;
 

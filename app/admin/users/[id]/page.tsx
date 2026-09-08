@@ -7,6 +7,14 @@ import { relativeTime } from '@/lib/relativeTime';
 
 type IpHistoryEntry = { ip: string; at: string };
 
+type LikelySameDevice = {
+  label: 'likely-same-device' | 'possibly-same-device' | 'different-device' | 'not-enough-data';
+  score: number;
+  matched_signals: string[];
+  same_browser_fingerprint: boolean;
+  matched_device_label: string | null;
+} | null;
+
 type Device = {
   id: string;
   device_id: string;
@@ -20,7 +28,48 @@ type Device = {
   first_seen: string;
   last_seen: string;
   is_active: boolean;
+  likely_same_device: LikelySameDevice;
 };
+
+// Human-readable names for the raw signal keys lib/deviceSimilarity.ts
+// compares — shown to the admin so "Approve" isn't a leap of faith.
+const SIGNAL_LABELS: Record<string, string> = {
+  screen: 'screen size',
+  color_depth: 'color depth',
+  timezone: 'timezone',
+  hardware_concurrency: 'CPU cores',
+  device_memory: 'device memory',
+  max_touch_points: 'touch support',
+  platform: 'OS',
+  languages: 'language',
+};
+
+/**
+ * "Likely/possibly same device as X" hint for a pending device row —
+ * see lib/deviceSimilarity.ts. Deliberately phrased as a hint to check,
+ * never a claim of certainty: cookies are browser-scoped (one person
+ * opening a second browser on the same laptop looks like a brand-new
+ * device by device_id alone), and this compares hardware/OS signals
+ * that stay constant across browsers on the same machine to surface
+ * that possibility for a human to confirm — it never auto-approves.
+ */
+function SameDeviceHint({ match }: { match: LikelySameDevice }) {
+  if (!match || match.label === 'not-enough-data' || match.label === 'different-device') return null;
+
+  const isLikely = match.label === 'likely-same-device';
+  const signalNames = match.matched_signals.map((s) => SIGNAL_LABELS[s] ?? s).join(', ');
+
+  return (
+    <p
+      className={`mt-1 text-xs ${isLikely ? 'text-ok' : 'text-warn'}`}
+      title={signalNames ? `Matched on: ${signalNames}` : undefined}
+    >
+      {isLikely ? 'Likely' : 'Possibly'} the same device as “{match.matched_device_label ?? 'an authorized device'}”
+      {match.same_browser_fingerprint ? ' (same browser — cookie was probably cleared)' : ''}
+      {signalNames ? ` · matched on ${signalNames}` : ''}
+    </p>
+  );
+}
 
 /**
  * How this device got its current status, in plain words — so an admin
@@ -170,6 +219,7 @@ export default function UserDevicesPage() {
                 {d.ip_address} · first seen {relativeTime(d.first_seen)}
               </p>
               <p className="mt-0.5 text-xs text-ink-faint">Waiting for admin review</p>
+              <SameDeviceHint match={d.likely_same_device} />
             </div>
             <div className="flex shrink-0 gap-2">
               <button

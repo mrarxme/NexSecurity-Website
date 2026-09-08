@@ -15,7 +15,8 @@ export type AuditEventType =
   | 'BOARD_DELETED'
   | 'BOARD_ACCESS_UPDATED'
   | 'VIDEO_ACCESS_GRANTED'
-  | 'VIDEO_ACCESS_DENIED';
+  | 'VIDEO_ACCESS_DENIED'
+  | 'COMMENT_DELETED';
 
 /**
  * Fire-and-forget audit log write. Deliberately swallows its own errors

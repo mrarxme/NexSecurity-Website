@@ -11,6 +11,7 @@ import { canAccessBoard } from '@/lib/boardAccess';
 import { VideoPlayer } from '@/components/VideoPlayer';
 import { PartsList } from '@/components/PartsList';
 import { ShareButton } from '@/components/ShareButton';
+import { VideoComments } from '@/components/VideoComments';
 
 export const dynamic = 'force-dynamic';
 
@@ -222,6 +223,8 @@ export default async function VideoPage({ params }: { params: { id: string } }) 
                 <p className="mt-2 text-sm leading-relaxed text-ink-dim">{video.description}</p>
               </div>
             )}
+
+            <VideoComments videoId={video.id} currentUserEmail={auth.email} isAdmin={auth.user.role === 'ADMIN'} />
           </div>
 
           <div className="space-y-6">
