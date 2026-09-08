@@ -22,6 +22,34 @@ type PendingRequest = {
   user_email: string;
 };
 
+// A background tab has its timers throttled by the browser, so a fixed
+// setInterval here tends to land on the exact same tick as other polling
+// intervals elsewhere in the app (e.g. VideoPlayer's heartbeat/progress
+// checkpoint) — all becoming "due" at once and firing in one burst the
+// moment the user switches back to this tab. That burst was landing
+// several concurrent session-refresh attempts on the server simultaneously
+// (see lib/supabase/middleware.ts for the actual fix for that). Using a
+// recursive setTimeout with a randomized ±20% delay instead just spreads
+// this poll's ticks away from everyone else's instead of staying
+// phase-locked with them.
+function jitteredPoll(callback: () => void, baseMs: number): () => void {
+  let cancelled = false;
+  let timeoutId: ReturnType<typeof setTimeout>;
+  const schedule = () => {
+    const jitter = baseMs * 0.2 * (Math.random() * 2 - 1);
+    timeoutId = setTimeout(() => {
+      if (cancelled) return;
+      callback();
+      if (!cancelled) schedule();
+    }, Math.max(1000, baseMs + jitter));
+  };
+  schedule();
+  return () => {
+    cancelled = true;
+    clearTimeout(timeoutId);
+  };
+}
+
 const ICONS = {
   home: (
     <path
@@ -247,10 +275,10 @@ export function TopNav({
       }
     }
     poll();
-    const interval = setInterval(poll, 15_000);
+    const stop = jitteredPoll(poll, 15_000);
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      stop();
     };
   }, [isAdmin]);
 

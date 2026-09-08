@@ -98,7 +98,35 @@ const SEEK_SECONDS = 10;
 const HOLD_THRESHOLD_MS = 320;
 const HEARTBEAT_MS = 4 * 60 * 1000; // well inside the ~10-minute token expiry
 const YT_TIME_POLL_MS = 400; // YT's API has no timeupdate event, only polling
-const PROGRESS_SAVE_MS = 15 * 1000; // "resume playback" checkpoint cadence
+const PROGRESS_SAVE_MS = 15 * 1000; // "resume playback" checkpoint cadence — YouTube only now (see effect below); Bunny/mp4/HLS already save themselves on pause/end/unload.
+
+// A background tab has its timers throttled by the browser, so several
+// independent intervals (this heartbeat, the YouTube progress checkpoint,
+// admin polling elsewhere) all become "due" at once and fire in the same
+// burst the moment the user switches back to the tab. That burst is what
+// was landing several concurrent session-refresh attempts on the server
+// at once (see lib/supabase/middleware.ts for the actual fix), and it's
+// also just needless simultaneous load either way. jitteredInterval
+// re-randomizes its own delay by up to ±20% on every tick (recursive
+// setTimeout, not setInterval) so independent timers drift apart instead
+// of staying phase-locked together.
+function jitteredInterval(callback: () => void, baseMs: number): () => void {
+  let cancelled = false;
+  let timeoutId: ReturnType<typeof setTimeout>;
+  const schedule = () => {
+    const jitter = baseMs * 0.2 * (Math.random() * 2 - 1); // ±20%
+    timeoutId = setTimeout(() => {
+      if (cancelled) return;
+      callback();
+      if (!cancelled) schedule();
+    }, Math.max(1000, baseMs + jitter));
+  };
+  schedule();
+  return () => {
+    cancelled = true;
+    clearTimeout(timeoutId);
+  };
+}
 
 // Shared per-button styling for the custom control bar — a small hit-area
 // with a hover highlight, matching the reference bar's button treatment
@@ -444,7 +472,7 @@ export function VideoPlayer({
   // already-open tab playing indefinitely until it's refreshed.
   useEffect(() => {
     if (!url) return;
-    const interval = setInterval(async () => {
+    return jitteredInterval(async () => {
       const ok = await fetchPlaybackUrl();
       if (!ok) {
         setRevoked(true);
@@ -454,7 +482,6 @@ export function VideoPlayer({
         mp4VideoRef.current?.pause();
       }
     }, HEARTBEAT_MS);
-    return () => clearInterval(interval);
   }, [url, fetchPlaybackUrl]);
 
   // Wire up player.js once both the library and the iframe exist. Bunny
@@ -501,17 +528,12 @@ export function VideoPlayer({
     };
   }, [isBunny, playerJsReady, url, resumeSeconds, reportProgress]);
 
-  // Periodic progress save while a Bunny class is actually playing —
-  // independent of the timeupdate event's own frequency, so this is a
-  // predictable ~15s cadence regardless of how often player.js fires it.
-  useEffect(() => {
-    if (!isBunny || !url) return;
-    const interval = setInterval(() => {
-      if (!isPlayingRef.current) return;
-      reportProgress(bunnyPositionRef.current, bunnyDurationRef.current);
-    }, PROGRESS_SAVE_MS);
-    return () => clearInterval(interval);
-  }, [isBunny, url, reportProgress]);
+  // No periodic interval-based save for Bunny: player.js already fires
+  // 'pause' (saved above) and the tab-hide/unload flush effect already
+  // covers the "walked away without pausing" case, so a 15s ticker here
+  // was just an extra background request with nothing it alone protects
+  // against — removed to cut down on simultaneous request bursts (see
+  // jitteredInterval's comment above and lib/supabase/middleware.ts).
 
   // --- YouTube: load the IFrame Player API script once, globally ---
   useEffect(() => {
@@ -662,14 +684,20 @@ export function VideoPlayer({
   }, [isYoutube, ytPlaying]);
 
   // Periodic "resume playback" checkpoint while a YouTube class is
-  // actually playing — same cadence/purpose as the Bunny interval above.
+  // actually playing — YouTube only. Its IFrame API only tells us about
+  // play/pause/end state changes (handled above), not a steady stream of
+  // position updates, so without this ticker a crash/power-loss mid-play
+  // would lose more progress than the other providers risk losing.
+  // mp4/HLS (isNativeVideo) get real 'pause'/'ended' DOM events on the
+  // native <video> element itself (see the effect below) and Bunny gets
+  // the same from player.js — both already save on those, plus the
+  // tab-hide/unload flush effect, so they don't need this extra ticker.
   useEffect(() => {
-    if (!(isYoutube || isNativeVideo) || !ytPlaying) return;
-    const interval = setInterval(() => {
+    if (!isYoutube || !ytPlaying) return;
+    return jitteredInterval(() => {
       reportProgress(ytCurrentTimeRef.current, ytDurationRef.current);
     }, PROGRESS_SAVE_MS);
-    return () => clearInterval(interval);
-  }, [isYoutube, isNativeVideo, ytPlaying, reportProgress]);
+  }, [isYoutube, ytPlaying, reportProgress]);
 
   // --- Direct Stream / m3u8: wire native <video> events into the same media
   // state the custom control bar reads (see the comment by mp4VideoRef
