@@ -12,6 +12,7 @@ import { VideoPlayer } from '@/components/VideoPlayer';
 import { PartsList } from '@/components/PartsList';
 import { ShareButton } from '@/components/ShareButton';
 import { VideoComments } from '@/components/VideoComments';
+import { resourceVisual } from '@/lib/resourceVisual';
 
 export const dynamic = 'force-dynamic';
 
@@ -183,36 +184,49 @@ export default async function VideoPage({ params }: { params: { id: string } }) 
             {resources.length > 0 && (
               <div className="mt-6 border-t border-vault-border pt-5">
                 <p className="font-mono text-[11px] uppercase tracking-widest text-ink-faint">Resources</p>
-                <div className="mt-3 space-y-2">
-                  {resources.map((r: { id: string; title: string; url: string }) => (
-                    <a
-                      key={r.id}
-                      href={r.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-3 rounded-lg border border-vault-border bg-vault-900 px-4 py-3 text-sm text-ink transition hover:border-signal backdrop-blur-xl shadow-glass"
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="shrink-0 text-signal" aria-hidden="true">
-                        <path
-                          d="M6 3.5h8l4 4V19a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 19V5A1.5 1.5 0 0 1 5.5 3.5H6Zm8 0V8h4"
-                          stroke="currentColor"
-                          strokeWidth="1.7"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
+                <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 md:grid-cols-4">
+                  {resources.map((r: { id: string; title: string; url: string }) => {
+                    const visual = resourceVisual(r.title);
+                    return (
+                      <a
+                        key={r.id}
+                        href={r.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="group relative block overflow-hidden rounded-xl border border-vault-border bg-vault-900 p-4 text-center shadow-glass backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:border-signal hover:shadow-lg"
+                      >
+                        {/* Soft color-matched glow in the corner, same
+                            "hint of the icon's color bleeding into the
+                            card" touch as the reference design — just
+                            dialed down to work on a dark card instead of
+                            a white one. */}
+                        <div
+                          className={`absolute -right-8 -top-8 h-20 w-20 rounded-full bg-gradient-to-br ${visual.gradient} opacity-20 blur-2xl transition-transform duration-500 group-hover:scale-150`}
+                          aria-hidden="true"
                         />
-                      </svg>
-                      <span className="flex-1 truncate">{r.title}</span>
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" className="shrink-0 text-ink-faint" aria-hidden="true">
-                        <path
-                          d="M12 4v11m0 0 4-4m-4 4-4-4M5 19h14"
-                          stroke="currentColor"
-                          strokeWidth="1.7"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    </a>
-                  ))}
+                        <div className="relative z-10 flex flex-col items-center gap-3">
+                          <div
+                            className={`flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br ${visual.gradient} shadow-lg transition-transform duration-300 group-hover:scale-110`}
+                          >
+                            {visual.icon}
+                          </div>
+                          <h4 className="line-clamp-2 text-sm font-semibold leading-tight text-ink">{r.title}</h4>
+                          <div className="flex items-center gap-1 text-xs text-ink-faint transition-colors group-hover:text-signal-glow">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                              <path
+                                d="M7 17 17 7M17 7H9M17 7v8"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                            <span>Open</span>
+                          </div>
+                        </div>
+                      </a>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -224,7 +238,13 @@ export default async function VideoPage({ params }: { params: { id: string } }) 
               </div>
             )}
 
-            <VideoComments videoId={video.id} currentUserEmail={auth.email} isAdmin={auth.user.role === 'ADMIN'} />
+            <VideoComments
+              videoId={video.id}
+              currentUserEmail={auth.email}
+              currentUserName={auth.profile.fullName}
+              currentUserAvatarUrl={auth.profile.avatarUrl}
+              isAdmin={auth.user.role === 'ADMIN'}
+            />
           </div>
 
           <div className="space-y-6">

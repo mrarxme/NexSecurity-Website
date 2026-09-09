@@ -1,7 +1,8 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { requireAuthorized } from '@/lib/auth';
 import { createSupabaseAdminClient } from '@/lib/supabase/admin';
-import { uuidSchema } from '@/lib/validation';
+import { uuidSchema, videoCommentSchema } from '@/lib/validation';
+import { checkRateLimit } from '@/lib/rateLimit';
 import { logAuditEvent } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
@@ -65,4 +66,76 @@ export async function DELETE(
   }
 
   return NextResponse.json({ ok: true });
+}
+
+/**
+ * Edit a comment's own text. Owner-only (see migration 0011's UPDATE
+ * policy) — unlike DELETE, this is never available to an admin editing
+ * someone else's comment: moderating by silently rewriting what a
+ * student said would misattribute words to them, which deleting a
+ * comment doesn't do.
+ */
+export async function PATCH(request: NextRequest, { params }: { params: { id: string; commentId: string } }) {
+  const auth = await requireAuthorized();
+  if (!auth.ok) {
+    return NextResponse.json({ error: 'Access denied.' }, { status: auth.status });
+  }
+
+  const parsedVideoId = uuidSchema.safeParse(params.id);
+  const parsedCommentId = uuidSchema.safeParse(params.commentId);
+  if (!parsedVideoId.success || !parsedCommentId.success) {
+    return NextResponse.json({ error: 'Access denied.' }, { status: 404 });
+  }
+  const videoId = parsedVideoId.data;
+  const commentId = parsedCommentId.data;
+
+  // Same allowance as posting a new comment — editing isn't a cheaper
+  // action than writing one, so it shares that budget rather than
+  // getting its own separate 20/min.
+  const rl = checkRateLimit(`video_comments:${auth.user.email}`, 20, 60_000);
+  if (!rl.allowed) {
+    return NextResponse.json({ error: 'Too many requests. Slow down.' }, { status: 429 });
+  }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 });
+  }
+
+  const parsed = videoCommentSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: 'Comment cannot be empty.' }, { status: 400 });
+  }
+
+  const adminClient = createSupabaseAdminClient();
+
+  const { data: comment } = await adminClient
+    .from('video_comments')
+    .select('id, user_email')
+    .eq('id', commentId)
+    .eq('video_id', videoId)
+    .maybeSingle();
+
+  if (!comment) {
+    return NextResponse.json({ error: 'Comment not found.' }, { status: 404 });
+  }
+  if (comment.user_email.toLowerCase() !== auth.user.email.toLowerCase()) {
+    return NextResponse.json({ error: 'Access denied.' }, { status: 403 });
+  }
+
+  const { data, error } = await adminClient
+    .from('video_comments')
+    .update({ body: parsed.data.body, updated_at: new Date().toISOString() })
+    .eq('id', commentId)
+    .eq('video_id', videoId)
+    .select('id, user_email, user_name, user_avatar_url, body, created_at, updated_at')
+    .single();
+
+  if (error || !data) {
+    return NextResponse.json({ error: 'Could not update comment.' }, { status: 500 });
+  }
+
+  return NextResponse.json({ comment: data });
 }

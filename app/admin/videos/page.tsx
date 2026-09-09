@@ -25,7 +25,7 @@ type Video = {
   download_url: string | null;
 };
 
-const RESOURCE_PRESETS = ['Lecture Sheet', 'Exam Sheet', 'Practice Sheet'];
+const RESOURCE_PRESETS = ['Lecture Sheet', 'Note', 'Exam Sheet', 'Practice Sheet'];
 
 // Accepts a full Bunny embed URL and pulls out "{libraryId}/{videoGuid}".
 function parseBunnyEmbedUrl(input: string): string | null {
@@ -130,6 +130,26 @@ export default function AdminVideosPage() {
   const [refererInput, setRefererInput] = useState('');
   const [sortOrder, setSortOrder] = useState(0);
   const [downloadUrl, setDownloadUrl] = useState('');
+
+  // Resources (Lecture Sheet, Note, etc.) queued up while filling out the
+  // create form — the video doesn't have an id yet, so these can't be
+  // POSTed to /api/admin/resources until createVideo() actually creates
+  // it; held here in the meantime and attached right after.
+  const [pendingResourceTitle, setPendingResourceTitle] = useState('');
+  const [pendingResourceUrl, setPendingResourceUrl] = useState('');
+  const [pendingResources, setPendingResources] = useState<{ title: string; url: string }[]>([]);
+
+  function addPendingResource(e: React.FormEvent) {
+    e.preventDefault();
+    if (!pendingResourceTitle || !pendingResourceUrl) return;
+    setPendingResources([...pendingResources, { title: pendingResourceTitle, url: pendingResourceUrl }]);
+    setPendingResourceTitle('');
+    setPendingResourceUrl('');
+  }
+
+  function removePendingResource(index: number) {
+    setPendingResources(pendingResources.filter((_, i) => i !== index));
+  }
 
   // Which video's edit modal is open
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -387,6 +407,28 @@ export default function AdminVideosPage() {
       setError(data.error ?? 'Could not add class.');
       return;
     }
+
+    // Attach whatever resources were queued up while filling out the
+    // form — now that the video has a real id. Best-effort: the class
+    // itself is already created at this point, so one failed resource
+    // attach shouldn't read as the whole "Add class" action having
+    // failed (same non-blocking stance the edit panel's addResource
+    // takes on its own errors).
+    if (pendingResources.length > 0) {
+      const results = await Promise.all(
+        pendingResources.map((r, index) =>
+          fetch('/api/admin/resources', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ video_id: data.video.id, title: r.title, url: r.url, sort_order: index }),
+          })
+        )
+      );
+      if (results.some((r) => !r.ok)) {
+        setError('Class was created, but one or more resources could not be attached. Add them from Edit.');
+      }
+    }
+
     setBoardId('');
     setTitle('');
     setDescription('');
@@ -396,6 +438,9 @@ export default function AdminVideosPage() {
     setCreateProvider('bunny');
     setSortOrder(0);
     setDownloadUrl('');
+    setPendingResources([]);
+    setPendingResourceTitle('');
+    setPendingResourceUrl('');
     load();
   }
 
@@ -416,9 +461,9 @@ export default function AdminVideosPage() {
       <p className="mt-2 max-w-2xl text-sm text-ink-dim">
         Attach a class (video) to a board — pick the top-level board first, then drill down to
         the exact one it belongs under. The list below is grouped the same way: collapse a board
-        to hide everything under it, or search by title if you already know the class. After
-        adding one, click <strong className="text-ink">Edit</strong> on it below to update
-        details or attach a Lecture Sheet, Exam Sheet, or Practice Sheet.
+        to hide everything under it, or search by title if you already know the class. You can
+        attach a Lecture Sheet, Note, Exam Sheet, or Practice Sheet while creating the class below,
+        or click <strong className="text-ink">Edit</strong> on it afterward to add or change one.
       </p>
 
       <form
@@ -566,6 +611,78 @@ export default function AdminVideosPage() {
               className="input"
             />
           </Field>
+        </div>
+        <div className="sm:col-span-2 border-t border-vault-border pt-3">
+          <span className="font-mono text-[10px] uppercase tracking-widest text-ink-faint">
+            Resources (optional — Lecture Sheet, Note, Exam Sheet, Practice Sheet…)
+          </span>
+
+          {pendingResources.length > 0 && (
+            <ul className="mt-2 space-y-2">
+              {pendingResources.map((r, index) => (
+                <li
+                  key={`${r.title}-${index}`}
+                  className="flex items-center justify-between rounded-md border border-vault-border bg-vault-900 px-3 py-2 text-sm backdrop-blur-xl shadow-glass"
+                >
+                  <div className="min-w-0">
+                    <span className="text-ink">{r.title}</span>
+                    <span className="ml-2 truncate font-mono text-[10px] text-ink-faint">{r.url}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removePendingResource(index)}
+                    className="ml-3 shrink-0 text-xs text-danger hover:underline"
+                  >
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="mt-3 flex flex-wrap items-end gap-2">
+            <div>
+              <span className="font-mono text-[10px] uppercase tracking-widest text-ink-faint">Name</span>
+              <input
+                value={pendingResourceTitle}
+                onChange={(e) => setPendingResourceTitle(e.target.value)}
+                placeholder="Lecture Sheet"
+                className="input mt-1 w-40"
+              />
+              <div className="mt-1 flex flex-wrap gap-1">
+                {RESOURCE_PRESETS.map((preset) => (
+                  <button
+                    type="button"
+                    key={preset}
+                    onClick={() => setPendingResourceTitle(preset)}
+                    className="rounded border border-vault-border px-1.5 py-0.5 text-[10px] text-ink-faint hover:border-signal hover:text-ink"
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="min-w-[240px] flex-1">
+              <span className="font-mono text-[10px] uppercase tracking-widest text-ink-faint">Link (https)</span>
+              <input
+                value={pendingResourceUrl}
+                onChange={(e) => setPendingResourceUrl(e.target.value)}
+                placeholder="https://…"
+                className="input mt-1"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={addPendingResource}
+              className="rounded-md border border-vault-border px-3 py-2 text-xs text-ink-dim transition hover:border-signal hover:text-ink"
+            >
+              Queue resource
+            </button>
+          </div>
+          <p className="mt-1.5 text-[11px] text-ink-faint">
+            Queued here, attached automatically once you click{' '}
+            <strong className="text-ink">Add class</strong> below.
+          </p>
         </div>
         <div className="sm:col-span-2">
           <button

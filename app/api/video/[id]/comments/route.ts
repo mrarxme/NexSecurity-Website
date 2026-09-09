@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { requireAuthorized } from '@/lib/auth';
+import { getAuth, requireAuthorized } from '@/lib/auth';
 import { createSupabaseAdminClient } from '@/lib/supabase/admin';
 import { uuidSchema, videoCommentSchema } from '@/lib/validation';
 import { checkRateLimit } from '@/lib/rateLimit';
@@ -63,7 +63,7 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
 
   const { data, error } = await adminClient
     .from('video_comments')
-    .select('id, user_email, body, created_at')
+    .select('id, user_email, user_name, user_avatar_url, body, created_at, updated_at')
     .eq('video_id', videoId)
     .order('created_at', { ascending: true });
 
@@ -76,9 +76,16 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
 
 /** Post a new comment on a class. */
 export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
-  const auth = await requireAuthorized();
-  if (!auth.ok) {
-    return NextResponse.json({ error: 'Access denied.' }, { status: auth.status });
+  // getAuth() (not requireAuthorized()) specifically because this route
+  // needs .profile (Google display name/avatar) to snapshot onto the
+  // new row — see the doc comment on migration 0011 for why it's a
+  // snapshot rather than a live join.
+  const auth = await getAuth();
+  if (auth.state === 'UNAUTHENTICATED') {
+    return NextResponse.json({ error: 'Access denied.' }, { status: 401 });
+  }
+  if (auth.state === 'UNAUTHORIZED' || auth.state === 'DEVICE_BLOCKED') {
+    return NextResponse.json({ error: 'Access denied.' }, { status: 403 });
   }
 
   const parsedId = uuidSchema.safeParse(params.id);
@@ -89,7 +96,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
   // Generous for a normal person chatting under a class, well under
   // this, while still stopping a scripted flood.
-  const rl = checkRateLimit(`video_comments:${auth.user.email}`, 20, 60_000);
+  const rl = checkRateLimit(`video_comments:${auth.email}`, 20, 60_000);
   if (!rl.allowed) {
     return NextResponse.json({ error: 'Too many requests. Slow down.' }, { status: 429 });
   }
@@ -107,17 +114,19 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   }
 
   const adminClient = createSupabaseAdminClient();
-  const gate = await loadVideoBoardOrDeny(adminClient, videoId, auth.user.email, auth.user.role === 'ADMIN');
+  const gate = await loadVideoBoardOrDeny(adminClient, videoId, auth.email, auth.user.role === 'ADMIN');
   if ('deny' in gate) return gate.deny;
 
   const { data, error } = await adminClient
     .from('video_comments')
     .insert({
       video_id: videoId,
-      user_email: auth.user.email,
+      user_email: auth.email,
+      user_name: auth.profile.fullName,
+      user_avatar_url: auth.profile.avatarUrl,
       body: parsed.data.body,
     })
-    .select('id, user_email, body, created_at')
+    .select('id, user_email, user_name, user_avatar_url, body, created_at, updated_at')
     .single();
 
   if (error || !data) {

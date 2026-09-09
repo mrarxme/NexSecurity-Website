@@ -4,12 +4,23 @@ import { useEffect } from 'react';
 import { usePathname } from 'next/navigation';
 import { collectDeviceSignals } from '@/lib/deviceSignals';
 
-const LAST_REPORTED_KEY = 'nex-device-signals-reported-at';
-// Signals rarely change for a given browser install — screen
-// resolution, timezone, and CPU count don't move day to day — so this
-// only needs to re-report occasionally (a user's timezone changing on
-// travel, say), not on every single page load.
-const REPORT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+// Module-level (not localStorage) — deliberately reset on every full
+// page load, never persisted across them. An earlier version of this
+// used a localStorage timestamp to only report once per 24h, but that
+// key lives on the BROWSER/origin, not on the account — removing a
+// user and re-adding them (or just switching accounts) on the same
+// browser left the old timestamp behind, so the new account's device
+// silently never got its signals reported for up to 24h, and the
+// admin panel's "likely same device" hint had nothing to compare
+// against. A full reload (which sign-in/sign-out always causes here,
+// since Google OAuth is a full-navigation redirect) is what's actually
+// meant to trigger a fresh report, so a plain in-memory flag for "have
+// we already reported this page load" is both simpler and correct —
+// no stale cross-account state to worry about, and the 10-req/min
+// server-side rate limit in app/api/device/signals/route.ts already
+// guards against any client-side re-render loop calling this
+// repeatedly.
+let reportedThisPageLoad = false;
 
 /**
  * Mounted once in app/layout.tsx, same as NotificationPrompt/SitePopup.
@@ -30,10 +41,7 @@ export function DeviceSignalCollector() {
 
   useEffect(() => {
     if (skip) return;
-    if (typeof window === 'undefined') return;
-
-    const lastReported = Number(localStorage.getItem(LAST_REPORTED_KEY) ?? 0);
-    if (Date.now() - lastReported < REPORT_INTERVAL_MS) return;
+    if (reportedThisPageLoad) return;
 
     let cancelled = false;
     (async () => {
@@ -45,9 +53,12 @@ export function DeviceSignalCollector() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(signals),
         });
-        if (res.ok) localStorage.setItem(LAST_REPORTED_KEY, String(Date.now()));
+        if (res.ok) reportedThisPageLoad = true;
       } catch {
-        // Best-effort — see file doc comment above.
+        // Best-effort — see file doc comment above. Leaving the flag
+        // unset on failure means it'll simply retry on the next
+        // mount/navigation rather than getting stuck "reported" when
+        // it wasn't.
       }
     })();
 
