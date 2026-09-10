@@ -22,7 +22,20 @@ export type GoogleProfile = { avatarUrl: string | null; fullName: string | null 
 export type AuthResult =
   | { state: 'UNAUTHENTICATED' }
   | { state: 'UNAUTHORIZED'; email: string }
-  | { state: 'DEVICE_BLOCKED'; email: string; ip: string; deviceLabel: string; deviceStatus: DeviceStatus | 'unknown' }
+  | {
+      state: 'DEVICE_BLOCKED';
+      email: string;
+      ip: string;
+      deviceLabel: string;
+      deviceStatus: DeviceStatus | 'unknown';
+      // Needed by requireDeviceIdentity() below — a blocked/pending
+      // device still needs to be identifiable so it can report its own
+      // signals (see that function's doc comment for why). deviceId is
+      // null only in the "cookie hasn't round-tripped yet" edge case,
+      // where there's no row to attach anything to regardless.
+      userId: string;
+      deviceId: string | null;
+    }
   | { state: 'AUTHORIZED'; email: string; user: AuthorizedUser; profile: GoogleProfile };
 
 /** How many recent {ip, at} entries to keep per device. Bounded so a
@@ -223,7 +236,7 @@ export async function getAuth(): Promise<AuthResult> {
     // a user here in the first place. Only accounts under restriction
     // need to care; treat it as "not yet approved" rather than guessing.
     if (isRestricted) {
-      return { state: 'DEVICE_BLOCKED', email: user.email, ip, deviceLabel, deviceStatus: 'unknown' };
+      return { state: 'DEVICE_BLOCKED', email: user.email, ip, deviceLabel, deviceStatus: 'unknown', userId: typedUser.id, deviceId: null };
     }
     return { state: 'AUTHORIZED', email: user.email, user: typedUser, profile };
   }
@@ -233,7 +246,7 @@ export async function getAuth(): Promise<AuthResult> {
     // access, so it must be awaited before we can answer.
     const status = await upsertDeviceAndGetStatus(typedUser, deviceId, ip, deviceLabel);
     if (status !== 'authorized') {
-      return { state: 'DEVICE_BLOCKED', email: user.email, ip, deviceLabel, deviceStatus: status };
+      return { state: 'DEVICE_BLOCKED', email: user.email, ip, deviceLabel, deviceStatus: status, userId: typedUser.id, deviceId };
     }
   } else {
     // Not restricted — still record the sighting so an admin has real
@@ -259,6 +272,37 @@ export async function requireAuthorized(): Promise<
   if (auth.state === 'UNAUTHORIZED') return { ok: false, status: 403 };
   if (auth.state === 'DEVICE_BLOCKED') return { ok: false, status: 403 };
   return { ok: true, user: auth.user };
+}
+
+/**
+ * Narrower than requireAuthorized() on purpose: a PENDING (or
+ * restricted/blocked) device is exactly what an admin needs a "likely
+ * same physical device" hint for (see lib/deviceSimilarity.ts) — but
+ * that hint can only exist if the device gets a chance to report its
+ * own signals in the first place, and requireAuthorized() rejects
+ * DEVICE_BLOCKED outright. Using that for /api/device/signals meant a
+ * pending device's very own signals-report request was itself blocked
+ * by the same restriction it was trying to help evaluate — nothing
+ * ever got saved, so the hint always came back empty. This lets a
+ * device identify itself and report signals regardless of its
+ * status, while still fully rejecting anyone without a valid,
+ * ACTIVE account (UNAUTHENTICATED/UNAUTHORIZED) — the one thing this
+ * never does is grant access to anything else. Only
+ * app/api/device/signals/route.ts should use this.
+ */
+export async function requireDeviceIdentity(): Promise<
+  { ok: true; userId: string; deviceId: string } | { ok: false; status: 401 | 403 | 409 }
+> {
+  const auth = await getAuth();
+  if (auth.state === 'UNAUTHENTICATED') return { ok: false, status: 401 };
+  if (auth.state === 'UNAUTHORIZED') return { ok: false, status: 403 };
+  if (auth.state === 'DEVICE_BLOCKED') {
+    if (!auth.deviceId) return { ok: false, status: 409 };
+    return { ok: true, userId: auth.userId, deviceId: auth.deviceId };
+  }
+  const deviceId = getDeviceId();
+  if (!deviceId) return { ok: false, status: 409 };
+  return { ok: true, userId: auth.user.id, deviceId };
 }
 
 /** Convenience guard for routes/pages that require an ADMIN. */

@@ -14,7 +14,7 @@ export async function GET() {
   const supabase = createSupabaseServerClient();
   const { data, error } = await supabase
     .from('authorized_users')
-    .select('id, email, role, status, restrict_devices, account_type, trial_duration_minutes, trial_started_at, trial_expires_at, created_at, updated_at')
+    .select('id, email, name, role, status, restrict_devices, account_type, trial_duration_minutes, trial_started_at, trial_expires_at, created_at, updated_at')
     .order('created_at', { ascending: false });
 
   if (error) return NextResponse.json({ error: 'Something went wrong.' }, { status: 500 });
@@ -41,6 +41,7 @@ export async function POST(request: NextRequest) {
     .from('authorized_users')
     .insert({
       email: parsed.data.email,
+      name: parsed.data.name || null,
       role: parsed.data.role,
       status: 'ACTIVE',
       restrict_devices: parsed.data.role !== 'ADMIN',
@@ -49,7 +50,7 @@ export async function POST(request: NextRequest) {
       // trial_expires_at stay null until first login (see lib/auth.ts).
       trial_duration_minutes: parsed.data.account_type === 'trial' ? parsed.data.trial_duration_minutes : null,
     })
-    .select('id, email, role, status, account_type, trial_duration_minutes')
+    .select('id, email, name, role, status, account_type, trial_duration_minutes')
     .single();
 
   if (error) {

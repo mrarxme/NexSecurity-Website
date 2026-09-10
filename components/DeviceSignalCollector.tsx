@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import { usePathname } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { collectDeviceSignals } from '@/lib/deviceSignals';
 
 // Module-level (not localStorage) — deliberately reset on every full
@@ -30,14 +30,27 @@ let reportedThisPageLoad = false;
  * already approved, just a different browser — see
  * lib/deviceSimilarity.ts and app/api/device/signals/route.ts.
  *
- * Skips /login (no session yet — requireAuthorized() would just reject
- * it) same as NotificationPrompt does. Everything here is best-effort:
- * a failed collect or a failed POST just means this device shows fewer
- * signals to compare against, never a broken sign-in or page load.
+ * Skips /login — EXCEPT the one case that actually matters most here:
+ * every DEVICE_BLOCKED page in app/ redirects to exactly
+ * `/login?error=device_blocked` (see e.g. app/learn/layout.tsx). That
+ * landing is precisely a pending/restricted device that needs its
+ * signals reported — skipping all of /login unconditionally meant a
+ * pending device could sit blocked indefinitely and NEVER get a chance
+ * to report anything, so the "likely same device" hint had nothing to
+ * compare and always came back empty regardless of how long an admin
+ * waited. Plain /login (no session yet) is still skipped — nothing
+ * would succeed there anyway. api/device/signals/route.ts uses
+ * requireDeviceIdentity() (not requireAuthorized()) specifically so
+ * this request isn't rejected by the very restriction it's reporting
+ * on. Everything here is best-effort either way: a failed collect or a
+ * failed POST just means this device shows fewer signals to compare
+ * against, never a broken sign-in or page load.
  */
 export function DeviceSignalCollector() {
   const pathname = usePathname();
-  const skip = pathname?.startsWith('/login');
+  const searchParams = useSearchParams();
+  const isDeviceBlockedLanding = pathname === '/login' && searchParams.get('error') === 'device_blocked';
+  const skip = pathname?.startsWith('/login') && !isDeviceBlockedLanding;
 
   useEffect(() => {
     if (skip) return;

@@ -1,4 +1,17 @@
-import type { DeviceSignals } from '@/lib/deviceSignals';
+import { describeDeviceSignals, type DeviceSignals } from '@/lib/deviceSignals';
+
+/** One signal category's side-by-side result — this device's value,
+ * the compared device's value, and whether they matched. Always
+ * present for all 8 categories (unlike the old matchedSignals-only
+ * shape), so the admin panel can show a complete table instead of just
+ * the ones that happened to agree — "ki ki same, ki ki alada" needs
+ * both sides visible, not just the matches. */
+export type SignalComparisonRow = {
+  key: string;
+  status: 'match' | 'mismatch' | 'unavailable';
+  valueA: string | null;
+  valueB: string | null;
+};
 
 export type DeviceMatch = {
   /** 0–1. Never treat this as a probability in the statistical sense —
@@ -7,6 +20,10 @@ export type DeviceMatch = {
   score: number;
   matchedSignals: string[];
   comparedSignals: number;
+  /** Full per-category breakdown, always all 8 rows — see
+   * SignalComparisonRow. This is what the admin panel's "Compare
+   * details" table renders directly. */
+  comparisons: SignalComparisonRow[];
   /** True only when BOTH sides reported a FingerprintJS visitorId AND
    * they're identical — a near-certain "same browser install" signal,
    * kept separate from the hardware-based score because it answers a
@@ -33,51 +50,53 @@ const SIGNAL_WEIGHTS: Record<string, number> = {
   languages: 1,
 };
 
-function sameLanguages(a?: string[], b?: string[]): boolean {
-  if (!a?.length || !b?.length) return false;
-  return a[0]?.toLowerCase() === b[0]?.toLowerCase();
-}
-
 /**
  * Compares two devices' best-effort signals (see lib/deviceSignals.ts)
- * and returns a rough "is this likely the same physical machine" hint
- * for the admin panel — used when a user opens a second browser on a
- * machine that already has an authorized device, so the pending
- * request doesn't look like a stranger's device out of nowhere.
- *
- * This is a HEURISTIC over a handful of coarse signals, not a forensic
- * match — treat the label as a hint to look closer, never as proof.
+ * and returns both a rough "is this likely the same physical machine"
+ * hint AND the full per-signal breakdown behind it — so the admin
+ * panel can show a human exactly what matched and what didn't, rather
+ * than just asserting a verdict. This is a HEURISTIC over a handful of
+ * coarse signals, not a forensic match — the label is a hint to look
+ * closer, never proof, and the underlying comparisons are there so an
+ * admin can judge that for themselves instead of taking the label on
+ * faith.
  */
 export function compareDeviceSignals(a: DeviceSignals, b: DeviceSignals): DeviceMatch {
+  const rowsA = describeDeviceSignals(a);
+  const rowsB = describeDeviceSignals(b);
+
+  const comparisons: SignalComparisonRow[] = [];
   const matchedSignals: string[] = [];
   let matchedWeight = 0;
   let comparedWeight = 0;
   let comparedSignals = 0;
 
-  function consider(key: keyof typeof SIGNAL_WEIGHTS, isMatch: boolean | null) {
-    if (isMatch === null) return; // one or both sides didn't report this signal
-    comparedWeight += SIGNAL_WEIGHTS[key];
+  for (let i = 0; i < rowsA.length; i++) {
+    const key = rowsA[i].key;
+    const valueA = rowsA[i].value;
+    const valueB = rowsB[i].value;
+
+    if (valueA == null || valueB == null) {
+      // One or both sides never reported this category (e.g. Safari
+      // never sends device_memory) — shown to the admin as
+      // "unavailable" rather than silently omitted, so it's clear this
+      // wasn't checked rather than looking like it was checked and
+      // passed.
+      comparisons.push({ key, status: 'unavailable', valueA, valueB });
+      continue;
+    }
+
+    const isMatch = valueA.toLowerCase() === valueB.toLowerCase();
+    comparisons.push({ key, status: isMatch ? 'match' : 'mismatch', valueA, valueB });
+
+    const weight = SIGNAL_WEIGHTS[key] ?? 1;
+    comparedWeight += weight;
     comparedSignals += 1;
     if (isMatch) {
-      matchedWeight += SIGNAL_WEIGHTS[key];
+      matchedWeight += weight;
       matchedSignals.push(key);
     }
   }
-
-  consider('screen', a.screen_width && b.screen_width ? a.screen_width === b.screen_width && a.screen_height === b.screen_height : null);
-  consider('color_depth', a.color_depth != null && b.color_depth != null ? a.color_depth === b.color_depth : null);
-  consider('timezone', a.timezone && b.timezone ? a.timezone === b.timezone : null);
-  consider(
-    'hardware_concurrency',
-    a.hardware_concurrency != null && b.hardware_concurrency != null ? a.hardware_concurrency === b.hardware_concurrency : null
-  );
-  consider('device_memory', a.device_memory != null && b.device_memory != null ? a.device_memory === b.device_memory : null);
-  consider(
-    'max_touch_points',
-    a.max_touch_points != null && b.max_touch_points != null ? a.max_touch_points === b.max_touch_points : null
-  );
-  consider('platform', a.platform && b.platform ? a.platform === b.platform : null);
-  consider('languages', a.languages?.length && b.languages?.length ? sameLanguages(a.languages, b.languages) : null);
 
   const sameBrowserFingerprint = Boolean(
     a.fingerprint_visitor_id && b.fingerprint_visitor_id && a.fingerprint_visitor_id === b.fingerprint_visitor_id
@@ -91,6 +110,7 @@ export function compareDeviceSignals(a: DeviceSignals, b: DeviceSignals): Device
       score: 0,
       matchedSignals,
       comparedSignals,
+      comparisons,
       sameBrowserFingerprint,
       label: 'not-enough-data',
     };
@@ -99,7 +119,7 @@ export function compareDeviceSignals(a: DeviceSignals, b: DeviceSignals): Device
   const score = comparedWeight > 0 ? matchedWeight / comparedWeight : 0;
   const label: DeviceMatch['label'] = score >= 0.8 ? 'likely-same-device' : score >= 0.5 ? 'possibly-same-device' : 'different-device';
 
-  return { score, matchedSignals, comparedSignals, sameBrowserFingerprint, label };
+  return { score, matchedSignals, comparedSignals, comparisons, sameBrowserFingerprint, label };
 }
 
 /**

@@ -10,6 +10,7 @@ import { orderBoardsHierarchically } from '@/lib/boardTree';
 type AuthorizedUser = {
   id: string;
   email: string;
+  name: string | null;
   role: 'USER' | 'ADMIN';
   status: 'ACTIVE' | 'DISABLED';
   restrict_devices: boolean;
@@ -21,6 +22,14 @@ type AuthorizedUser = {
 };
 
 const TRIAL_DURATIONS = [5, 10, 15, 20] as const;
+
+/** What the admin panel shows for a user — their saved name if there is
+ * one, their email otherwise. Nothing about auth reads `name` (see
+ * migration 0012); this is purely so the users table and edit modal
+ * aren't just a wall of email addresses. */
+function displayName(user: Pick<AuthorizedUser, 'name' | 'email'>): string {
+  return user.name?.trim() || user.email;
+}
 
 /** Human summary of a trial account's clock, for the users table badge
  * and the edit modal — "not started yet", "expires in 7m", or "expired". */
@@ -39,6 +48,7 @@ export default function AdminUsersPage() {
   const [boards, setBoards] = useState<Board[]>([]);
   const [loading, setLoading] = useState(true);
   const [newEmail, setNewEmail] = useState('');
+  const [newName, setNewName] = useState('');
   const [newRole, setNewRole] = useState<'USER' | 'ADMIN'>('USER');
   const [newAccountType, setNewAccountType] = useState<'paid' | 'trial'>('paid');
   const [newTrialDuration, setNewTrialDuration] = useState<number>(10);
@@ -54,7 +64,9 @@ export default function AdminUsersPage() {
   const filteredUsers = useMemo(() => {
     const needle = search.trim().toLowerCase();
     if (!needle) return users;
-    return users.filter((u) => u.email.toLowerCase().includes(needle));
+    return users.filter(
+      (u) => u.email.toLowerCase().includes(needle) || (u.name?.toLowerCase().includes(needle) ?? false)
+    );
   }, [users, search]);
 
   const restrictedOrdered = useMemo(
@@ -87,6 +99,7 @@ export default function AdminUsersPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         email: newEmail,
+        name: newName || undefined,
         role: newRole,
         account_type: newAccountType,
         trial_duration_minutes: newAccountType === 'trial' ? newTrialDuration : undefined,
@@ -115,6 +128,7 @@ export default function AdminUsersPage() {
       }
     }
     setNewEmail('');
+    setNewName('');
     setNewRole('USER');
     setNewAccountType('paid');
     setNewTrialDuration(10);
@@ -123,7 +137,7 @@ export default function AdminUsersPage() {
     load();
   }
 
-  async function updateUser(id: string, patch: Partial<Pick<AuthorizedUser, 'role' | 'status' | 'restrict_devices'>>) {
+  async function updateUser(id: string, patch: Partial<Pick<AuthorizedUser, 'name' | 'role' | 'status' | 'restrict_devices'>>) {
     setBusyId(id);
     setError(null);
     const res = await fetch(`/api/admin/users/${id}`, {
@@ -208,6 +222,17 @@ export default function AdminUsersPage() {
           />
         </div>
         <div>
+          <label className="font-mono text-[10px] uppercase tracking-widest text-ink-faint">
+            Name (optional)
+          </label>
+          <input
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="So you can find them by name later, not just email"
+            className="mt-1 w-full rounded-md border border-vault-border bg-vault-800 px-3 py-2 text-sm text-ink outline-none focus:border-signal"
+          />
+        </div>
+        <div>
           <label className="font-mono text-[10px] uppercase tracking-widest text-ink-faint">Role</label>
           <select
             value={newRole}
@@ -278,14 +303,14 @@ export default function AdminUsersPage() {
       {error && <p className="mt-3 text-xs text-danger">{error}</p>}
 
       {users.length > 5 && (
-        <SearchInput value={search} onChange={setSearch} placeholder="Search by email…" className="mt-4 max-w-sm" />
+        <SearchInput value={search} onChange={setSearch} placeholder="Search by name or email…" className="mt-4 max-w-sm" />
       )}
 
       <div className="mt-6 overflow-hidden rounded-xl border border-vault-border">
         <table className="w-full text-left text-sm">
           <thead className="bg-vault-900 font-mono text-[10px] uppercase tracking-widest text-ink-faint">
             <tr>
-              <th className="px-4 py-3">Email</th>
+              <th className="px-4 py-3">User</th>
               <th className="px-4 py-3">Role</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3 text-right">Actions</th>
@@ -313,7 +338,10 @@ export default function AdminUsersPage() {
             ) : (
               filteredUsers.map((u) => (
                 <tr key={u.id} className="border-t border-vault-border bg-vault-900/50">
-                  <td className="px-4 py-3 text-ink">{u.email}</td>
+                  <td className="px-4 py-3 text-ink">
+                    <div>{displayName(u)}</div>
+                    {u.name && <div className="mt-0.5 font-mono text-[10px] text-ink-faint">{u.email}</div>}
+                  </td>
                   <td className="px-4 py-3">
                     <span className="font-mono text-[10px] uppercase tracking-widest text-ink-dim">{u.role}</span>
                   </td>
@@ -357,7 +385,7 @@ export default function AdminUsersPage() {
       </div>
 
       {editingUser && (
-        <Modal title={editingUser.email} subtitle="Edit user" onClose={() => setEditingId(null)}>
+        <Modal title={displayName(editingUser)} subtitle="Edit user" onClose={() => setEditingId(null)}>
           <UserEditPanel
             user={editingUser}
             boards={boards}
@@ -383,7 +411,7 @@ function UserEditPanel({
   user: AuthorizedUser;
   boards: Board[];
   restrictedOrdered: ReturnType<typeof orderBoardsHierarchically<Board>>;
-  onUpdate: (id: string, patch: Partial<Pick<AuthorizedUser, 'role' | 'status' | 'restrict_devices'>>) => void;
+  onUpdate: (id: string, patch: Partial<Pick<AuthorizedUser, 'name' | 'role' | 'status' | 'restrict_devices'>>) => void;
   onError: (msg: string) => void;
   busy: boolean;
 }) {
@@ -392,6 +420,15 @@ function UserEditPanel({
   const [loadingAccess, setLoadingAccess] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState<string | null>(null);
+  const [nameDraft, setNameDraft] = useState(user.name ?? '');
+
+  // The edit modal is remounted fresh each time it opens (editingUser
+  // changes), but React can still reuse this component instance if the
+  // same modal briefly re-renders with updated user data (e.g. right
+  // after saving) — resync the draft so it doesn't show stale text.
+  useEffect(() => {
+    setNameDraft(user.name ?? '');
+  }, [user.id, user.name]);
 
   useEffect(() => {
     let cancelled = false;
@@ -460,6 +497,28 @@ function UserEditPanel({
           )}
         </div>
       )}
+      <div>
+        <label className="font-mono text-[10px] uppercase tracking-widest text-ink-faint">Name</label>
+        <div className="mt-1 flex items-center gap-2">
+          <input
+            value={nameDraft}
+            onChange={(e) => setNameDraft(e.target.value)}
+            placeholder={user.email}
+            className="w-full rounded-md border border-vault-border bg-vault-800 px-3 py-2 text-sm text-ink outline-none focus:border-signal"
+          />
+          <button
+            disabled={busy || nameDraft.trim() === (user.name ?? '')}
+            onClick={() => onUpdate(user.id, { name: nameDraft.trim() })}
+            className="shrink-0 rounded-md bg-signal px-3 py-2 text-xs font-medium text-white transition hover:bg-signal-glow disabled:opacity-50"
+          >
+            Save
+          </button>
+        </div>
+        <p className="mt-1 text-xs text-ink-faint">
+          Shown instead of the email everywhere in the admin panel — the email itself never
+          changes and always stays underneath, so nothing else about the account is affected.
+        </p>
+      </div>
       <div className="flex flex-wrap gap-3">
         <button
           disabled={busy}

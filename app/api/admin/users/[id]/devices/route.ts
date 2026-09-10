@@ -5,7 +5,7 @@ import { deviceDecisionSchema, uuidSchema } from '@/lib/validation';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { logAuditEvent } from '@/lib/audit';
 import { bestDeviceMatch } from '@/lib/deviceSimilarity';
-import type { DeviceSignals } from '@/lib/deviceSignals';
+import { describeDeviceSignals, type DeviceSignals } from '@/lib/deviceSignals';
 
 export const dynamic = 'force-dynamic';
 
@@ -54,20 +54,27 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
       : null;
     const matchedDevice = match ? authorizedDevices.find((o) => o.id === match.deviceRowId) : null;
 
-    // The raw `signals` blob (including the FingerprintJS visitorId) is
-    // only ever needed server-side to compute the comparison above —
-    // send the admin panel the derived hint, not the raw fingerprint
-    // data itself.
+    // Every device gets its own signal_rows — not just pending ones —
+    // so the admin can open up an authorized/rejected/blocked device
+    // and see its raw signal snapshot on its own, independent of
+    // whether it happened to match anything (see
+    // lib/deviceSignals.ts's describeDeviceSignals). The raw `signals`
+    // blob itself (including the FingerprintJS visitorId, a long
+    // opaque hash with no display value of its own) still isn't sent —
+    // only this formatted, human-readable view of it.
+    const signalRows = describeDeviceSignals((d.signals ?? {}) as DeviceSignals);
     const { signals: _signals, ...rest } = d;
 
     return {
       ...rest,
       is_active: d.status === 'authorized' && new Date(d.last_seen).getTime() >= activeCutoff,
+      signal_rows: signalRows,
       likely_same_device: match
         ? {
             label: match.label,
             score: match.score,
             matched_signals: match.matchedSignals,
+            comparisons: match.comparisons,
             same_browser_fingerprint: match.sameBrowserFingerprint,
             matched_device_label: matchedDevice?.label || matchedDevice?.device_label || null,
           }

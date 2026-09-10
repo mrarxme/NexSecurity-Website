@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { Suspense } from 'react';
 import { Manrope, JetBrains_Mono } from 'next/font/google';
 import { RegisterServiceWorker } from '@/components/RegisterServiceWorker';
 import { SitePopup } from '@/components/SitePopup';
@@ -35,7 +36,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <RegisterServiceWorker />
         <SitePopup />
         <NotificationPrompt />
-        <DeviceSignalCollector />
+        <Suspense fallback={null}>
+          <DeviceSignalCollector />
+        </Suspense>
         {children}
       </body>
     </html>

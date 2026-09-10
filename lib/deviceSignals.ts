@@ -44,6 +44,62 @@ export type DeviceSignals = {
   fingerprint_visitor_id?: string;
 };
 
+/** Human labels for the signal categories — shared by the single-device
+ * view and the comparison table in the admin panel (see
+ * app/admin/users/[id]/page.tsx) so both use identical wording. */
+export const SIGNAL_LABELS: Record<string, string> = {
+  screen: 'Screen size',
+  color_depth: 'Color depth',
+  timezone: 'Timezone',
+  hardware_concurrency: 'CPU cores',
+  device_memory: 'Device memory',
+  max_touch_points: 'Touch points',
+  platform: 'OS platform',
+  languages: 'Language',
+};
+
+export type SignalRow = { key: string; label: string; value: string | null };
+
+/**
+ * Turns one device's raw signals into a fixed, ordered list of
+ * human-readable rows — always all 8 categories, `value: null` for
+ * whatever this particular browser didn't report (Safari/Firefox never
+ * send device_memory, for instance). This is the single source of
+ * truth for "how does one signal look on screen" — both the admin
+ * panel's plain single-device view and lib/deviceSimilarity.ts's
+ * pairwise comparison table are built from calling this on each side
+ * and lining the rows up, rather than formatting values twice in two
+ * different places that could drift out of sync.
+ */
+export function describeDeviceSignals(s: DeviceSignals): SignalRow[] {
+  return [
+    {
+      key: 'screen',
+      label: SIGNAL_LABELS.screen,
+      value: s.screen_width && s.screen_height ? `${s.screen_width}×${s.screen_height}` : null,
+    },
+    { key: 'color_depth', label: SIGNAL_LABELS.color_depth, value: s.color_depth != null ? `${s.color_depth}-bit` : null },
+    { key: 'timezone', label: SIGNAL_LABELS.timezone, value: s.timezone ?? null },
+    {
+      key: 'hardware_concurrency',
+      label: SIGNAL_LABELS.hardware_concurrency,
+      value: s.hardware_concurrency != null ? `${s.hardware_concurrency}` : null,
+    },
+    {
+      key: 'device_memory',
+      label: SIGNAL_LABELS.device_memory,
+      value: s.device_memory != null ? `${s.device_memory} GB` : null,
+    },
+    {
+      key: 'max_touch_points',
+      label: SIGNAL_LABELS.max_touch_points,
+      value: s.max_touch_points != null ? `${s.max_touch_points}` : null,
+    },
+    { key: 'platform', label: SIGNAL_LABELS.platform, value: s.platform ?? null },
+    { key: 'languages', label: SIGNAL_LABELS.languages, value: s.languages?.length ? s.languages[0] : null },
+  ];
+}
+
 export async function collectDeviceSignals(): Promise<DeviceSignals> {
   const signals: DeviceSignals = {};
 

@@ -4,13 +4,22 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { relativeTime } from '@/lib/relativeTime';
+import { SIGNAL_LABELS, type SignalRow } from '@/lib/deviceSignals';
 
 type IpHistoryEntry = { ip: string; at: string };
+
+type SignalComparisonRow = {
+  key: string;
+  status: 'match' | 'mismatch' | 'unavailable';
+  valueA: string | null;
+  valueB: string | null;
+};
 
 type LikelySameDevice = {
   label: 'likely-same-device' | 'possibly-same-device' | 'different-device' | 'not-enough-data';
   score: number;
   matched_signals: string[];
+  comparisons: SignalComparisonRow[];
   same_browser_fingerprint: boolean;
   matched_device_label: string | null;
 } | null;
@@ -28,21 +37,50 @@ type Device = {
   first_seen: string;
   last_seen: string;
   is_active: boolean;
+  signal_rows: SignalRow[];
   likely_same_device: LikelySameDevice;
 };
 
-// Human-readable names for the raw signal keys lib/deviceSimilarity.ts
-// compares — shown to the admin so "Approve" isn't a leap of faith.
-const SIGNAL_LABELS: Record<string, string> = {
-  screen: 'screen size',
-  color_depth: 'color depth',
-  timezone: 'timezone',
-  hardware_concurrency: 'CPU cores',
-  device_memory: 'device memory',
-  max_touch_points: 'touch support',
-  platform: 'OS',
-  languages: 'language',
-};
+/**
+ * Plain "here's this one device's own signals" table — no comparison,
+ * no verdict, just what this browser reported. Available on every
+ * device (pending, authorized, rejected, blocked) so an admin isn't
+ * limited to only inspecting a device when it happened to match
+ * something; sometimes the useful question is just "what does THIS
+ * device look like" on its own — e.g. two pending requests that didn't
+ * match any authorized device, but an admin wants to check by eye
+ * whether they look like the same machine as each other.
+ */
+function SignalDetailsToggle({ rows }: { rows: SignalRow[] }) {
+  const [open, setOpen] = useState(false);
+  const reported = rows.filter((r) => r.value != null);
+  if (reported.length === 0) {
+    return <p className="mt-1 text-xs text-ink-faint">No device signals reported yet.</p>;
+  }
+
+  return (
+    <div className="mt-1">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="font-mono text-[10px] uppercase tracking-widest text-ink-faint underline-offset-2 hover:text-ink hover:underline"
+      >
+        {open ? 'Hide' : 'Show'} device info ({reported.length})
+      </button>
+      {open && (
+        <table className="mt-2 w-full max-w-sm border-collapse text-xs">
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.key} className="border-t border-vault-border first:border-t-0">
+                <td className="py-1 pr-3 text-ink-faint">{r.label}</td>
+                <td className={`py-1 ${r.value ? 'text-ink' : 'text-ink-faint'}`}>{r.value ?? '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
 
 /**
  * "Likely/possibly same device as X" hint for a pending device row —
@@ -52,22 +90,58 @@ const SIGNAL_LABELS: Record<string, string> = {
  * device by device_id alone), and this compares hardware/OS signals
  * that stay constant across browsers on the same machine to surface
  * that possibility for a human to confirm — it never auto-approves.
+ * The one-line summary can be expanded into the full signal-by-signal
+ * table (matched AND mismatched, not just matches) so the admin can
+ * actually see the comparison for themselves instead of trusting a
+ * single verdict word.
  */
 function SameDeviceHint({ match }: { match: LikelySameDevice }) {
+  const [open, setOpen] = useState(false);
   if (!match || match.label === 'not-enough-data' || match.label === 'different-device') return null;
 
   const isLikely = match.label === 'likely-same-device';
   const signalNames = match.matched_signals.map((s) => SIGNAL_LABELS[s] ?? s).join(', ');
 
   return (
-    <p
-      className={`mt-1 text-xs ${isLikely ? 'text-ok' : 'text-warn'}`}
-      title={signalNames ? `Matched on: ${signalNames}` : undefined}
-    >
-      {isLikely ? 'Likely' : 'Possibly'} the same device as “{match.matched_device_label ?? 'an authorized device'}”
-      {match.same_browser_fingerprint ? ' (same browser — cookie was probably cleared)' : ''}
-      {signalNames ? ` · matched on ${signalNames}` : ''}
-    </p>
+    <div className="mt-1">
+      <p className={`text-xs ${isLikely ? 'text-ok' : 'text-warn'}`}>
+        {isLikely ? 'Likely' : 'Possibly'} the same device as “{match.matched_device_label ?? 'an authorized device'}”
+        {match.same_browser_fingerprint ? ' (same browser — cookie was probably cleared)' : ''}
+        {signalNames ? ` · matched on ${signalNames}` : ''}
+      </p>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="mt-0.5 font-mono text-[10px] uppercase tracking-widest text-ink-faint underline-offset-2 hover:text-ink hover:underline"
+      >
+        {open ? 'Hide' : 'Show'} comparison
+      </button>
+      {open && (
+        <table className="mt-2 w-full max-w-md border-collapse text-xs">
+          <thead>
+            <tr className="text-left font-mono text-[9px] uppercase tracking-widest text-ink-faint">
+              <th className="pb-1 pr-3 font-normal">Signal</th>
+              <th className="pb-1 pr-3 font-normal">This device</th>
+              <th className="pb-1 pr-3 font-normal">{match.matched_device_label ?? 'Authorized device'}</th>
+              <th className="pb-1 font-normal">&nbsp;</th>
+            </tr>
+          </thead>
+          <tbody>
+            {match.comparisons.map((row) => (
+              <tr key={row.key} className="border-t border-vault-border">
+                <td className="py-1 pr-3 text-ink-faint">{SIGNAL_LABELS[row.key] ?? row.key}</td>
+                <td className="py-1 pr-3 text-ink">{row.valueA ?? '—'}</td>
+                <td className="py-1 pr-3 text-ink">{row.valueB ?? '—'}</td>
+                <td className="py-1">
+                  {row.status === 'match' && <span className="text-ok">✓ same</span>}
+                  {row.status === 'mismatch' && <span className="text-danger">✗ differs</span>}
+                  {row.status === 'unavailable' && <span className="text-ink-faint">not reported</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
   );
 }
 
@@ -91,6 +165,7 @@ function describeApproval(device: Device): string {
 type UserRow = {
   id: string;
   email: string;
+  name: string | null;
   role: 'USER' | 'ADMIN';
   status: 'ACTIVE' | 'DISABLED';
   restrict_devices: boolean;
@@ -183,7 +258,7 @@ export default function UserDevicesPage() {
       </Link>
       <p className="mt-3 font-mono text-[11px] uppercase tracking-[0.2em] text-signal-glow">Admin</p>
       <h1 className="mt-2 font-display text-2xl font-semibold text-ink">
-        {loading ? 'Loading…' : user?.email ?? 'User'}
+        {loading ? 'Loading…' : (user?.name?.trim() || user?.email) ?? 'User'}
       </h1>
       <p className="mt-2 max-w-2xl text-sm text-ink-dim">
         Unlimited devices per account — but every new device needs your approval before it can
@@ -220,6 +295,7 @@ export default function UserDevicesPage() {
               </p>
               <p className="mt-0.5 text-xs text-ink-faint">Waiting for admin review</p>
               <SameDeviceHint match={d.likely_same_device} />
+              <SignalDetailsToggle rows={d.signal_rows} />
             </div>
             <div className="flex shrink-0 gap-2">
               <button
@@ -430,6 +506,7 @@ function DeviceRow({
               ))}
             </ul>
           )}
+          <SignalDetailsToggle rows={device.signal_rows} />
         </div>
         <div className="shrink-0">{actions}</div>
       </div>

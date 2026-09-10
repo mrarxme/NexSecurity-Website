@@ -41,6 +41,11 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
   }
 
   const patch: Record<string, unknown> = { ...parsed.data, updated_at: new Date().toISOString() };
+  // '' means "clear the name" from the edit UI — store that as null
+  // rather than an empty string (matches how it's inserted on create).
+  if ('name' in parsed.data) {
+    patch.name = parsed.data.name || null;
+  }
 
   // Manually re-activating a trial account that had already expired is
   // an explicit admin override — clear the expiry so it doesn't just get
@@ -56,7 +61,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     .from('authorized_users')
     .update(patch)
     .eq('id', parsedId.data)
-    .select('id, email, role, status')
+    .select('id, email, name, role, status')
     .single();
 
   if (error) return NextResponse.json({ error: 'Could not update user.' }, { status: 400 });

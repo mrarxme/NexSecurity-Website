@@ -8,6 +8,10 @@ export const statusSchema = z.enum(['ACTIVE', 'DISABLED']);
 export const addAuthorizedUserSchema = z
   .object({
     email: emailSchema,
+    // Purely a display label for the admin panel — see migration 0012.
+    // Optional; empty string treated the same as not provided (falls
+    // back to showing the email, handled in the route).
+    name: z.string().trim().max(120).optional(),
     role: roleSchema.default('USER'),
     // Free Trial: 'paid' follows the existing flow exactly. 'trial'
     // requires a duration — the countdown only starts at the account's
@@ -21,6 +25,7 @@ export const addAuthorizedUserSchema = z
   });
 
 export const updateAuthorizedUserSchema = z.object({
+  name: z.string().trim().max(120).optional(),
   role: roleSchema.optional(),
   status: statusSchema.optional(),
   restrict_devices: z.boolean().optional(),
