@@ -1,0 +1,17 @@
+name: Notify Fork on Push
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger fork sync
+        run: |
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.FORK_SYNC_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/mrarxme/NexSecurity-Website/dispatches \
+            -d '{"event_type":"upstream_updated"}'

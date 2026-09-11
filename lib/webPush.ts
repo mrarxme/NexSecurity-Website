@@ -21,10 +21,14 @@ function ensureVapidConfigured(): boolean {
 }
 
 /**
- * Sends the same notification to every subscribed device for the given
- * list of user emails. Best-effort per-device: one dead subscription
- * (expired, or the user revoked permission) never blocks delivery to
- * anyone else, and gets quietly deleted so future sends stop retrying it.
+ * Sends the same push notification to every subscribed device for the
+ * given list of user emails. Best-effort per-device: one dead
+ * subscription (expired, or the user revoked permission) never blocks
+ * delivery to anyone else, and gets quietly deleted so future sends
+ * stop retrying it. This is ONLY the push half of delivery — see
+ * notifyUsers() below for the combined push + in-app inbox write that
+ * every actual notification event should go through instead of
+ * calling this directly.
  */
 export async function sendPushToEmails(
   emails: string[],
@@ -61,21 +65,58 @@ export async function sendPushToEmails(
 }
 
 /**
- * Notifies everyone who can actually SEE a board that a new class was
- * just added to it — respecting the exact same access rules as the
- * board itself (see lib/boardAccess.ts): admins always, plus either
- * every active user (universal board) or only the ones explicitly
- * granted access (restricted board). The admin who just created the
- * class is excluded — they don't need a push about their own action.
+ * The one function every "something new was added" event should call.
+ * Push (sendPushToEmails) only ever reaches a device that BOTH supports
+ * the Push API AND currently has an active subscription — plenty of
+ * real devices have neither (iOS Safari outside an installed PWA has no
+ * Push API at all; anyone who hasn't clicked "Enable" yet has no
+ * subscription). Writing to user_notifications (0013) as well means
+ * every recipient sees it in the in-app bell (components/TopNav.tsx)
+ * the next time they open the app, regardless of push support — push
+ * is the "even if the app is fully closed" path, the inbox is the
+ * "definitely see it eventually" path, and every event needs both.
+ *
+ * Best-effort like sendPushToEmails: the in-app insert and the push
+ * send never block or fail each other.
  */
-export async function notifyNewClass(boardId: string, videoTitle: string, videoId: string, createdByEmail: string): Promise<void> {
+export async function notifyUsers(
+  emails: string[],
+  payload: { type: 'class' | 'ebook' | 'routine'; title: string; body: string; url: string }
+): Promise<void> {
+  if (emails.length === 0) return;
+
+  const adminClient = createSupabaseAdminClient();
+  const rows = emails.map((email) => ({
+    user_email: email,
+    type: payload.type,
+    title: payload.title,
+    body: payload.body,
+    url: payload.url,
+  }));
+
+  await Promise.all([
+    adminClient.from('user_notifications').insert(rows),
+    sendPushToEmails(emails, { title: payload.title, body: payload.body, url: payload.url }),
+  ]);
+}
+
+/**
+ * Who should hear about something new on this board — the shared rule
+ * behind notifyNewClass/notifyNewEbook/notifyNewRoutine below: admins
+ * always, plus either every active user (universal board) or only the
+ * ones explicitly granted access (restricted board) — same access rule
+ * the board itself enforces (see lib/boardAccess.ts). The admin who
+ * just created the thing is excluded — they don't need a notification
+ * about their own action.
+ */
+async function getBoardRecipients(boardId: string, excludeEmail: string): Promise<{ boardTitle: string; recipients: string[] } | null> {
   const adminClient = createSupabaseAdminClient();
 
   const { data: board } = await adminClient.from('boards').select('title, visibility').eq('id', boardId).maybeSingle();
-  if (!board) return;
+  if (!board) return null;
 
   const { data: users } = await adminClient.from('authorized_users').select('email, role').eq('status', 'ACTIVE');
-  if (!users || users.length === 0) return;
+  if (!users || users.length === 0) return { boardTitle: board.title, recipients: [] };
 
   let recipients: string[];
   if (board.visibility === 'restricted') {
@@ -86,12 +127,50 @@ export async function notifyNewClass(boardId: string, videoTitle: string, videoI
     recipients = users.map((u) => u.email);
   }
 
-  recipients = recipients.filter((e) => e.toLowerCase() !== createdByEmail.toLowerCase());
-  if (recipients.length === 0) return;
+  recipients = recipients.filter((e) => e.toLowerCase() !== excludeEmail.toLowerCase());
+  return { boardTitle: board.title, recipients };
+}
 
-  await sendPushToEmails(recipients, {
-    title: `New class in ${board.title}`,
+/** Notifies everyone who can see a board that a new class just went up on it. */
+export async function notifyNewClass(boardId: string, videoTitle: string, videoId: string, createdByEmail: string): Promise<void> {
+  const result = await getBoardRecipients(boardId, createdByEmail);
+  if (!result || result.recipients.length === 0) return;
+
+  await notifyUsers(result.recipients, {
+    type: 'class',
+    title: `New class in ${result.boardTitle}`,
     body: videoTitle,
     url: `/learn/video/${videoId}`,
+  });
+}
+
+/** Notifies everyone who can see a board that a new e-book was added to it. */
+export async function notifyNewEbook(boardId: string, ebookTitle: string, createdByEmail: string): Promise<void> {
+  const result = await getBoardRecipients(boardId, createdByEmail);
+  if (!result || result.recipients.length === 0) return;
+
+  await notifyUsers(result.recipients, {
+    type: 'ebook',
+    title: `New e-book in ${result.boardTitle}`,
+    body: ebookTitle,
+    // e-books don't have their own page — they're listed alongside
+    // their board on /learn/ebooks (see app/learn/ebooks/page.tsx).
+    url: '/learn/ebooks',
+  });
+}
+
+/** Notifies everyone who can see a board that a new/updated routine was published. */
+export async function notifyNewRoutine(boardId: string, routineTitle: string, createdByEmail: string): Promise<void> {
+  const result = await getBoardRecipients(boardId, createdByEmail);
+  if (!result || result.recipients.length === 0) return;
+
+  await notifyUsers(result.recipients, {
+    type: 'routine',
+    title: 'Routine updated',
+    body: routineTitle,
+    // Same reasoning as e-books above — routines are boards with
+    // board_type='routine', all listed together on one page (see
+    // app/learn/routines/page.tsx), no individual per-routine URL.
+    url: '/learn/routines',
   });
 }

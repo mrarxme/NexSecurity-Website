@@ -2,17 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
+import { getPushStatus, subscribeToPush } from '@/lib/webPushClient';
 
 const DISMISS_KEY = 'nex-push-dismissed';
-
-// PushManager wants the VAPID public key as a raw Uint8Array, not the
-// base64url string it's normally handed around as everywhere else.
-function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const rawData = atob(base64);
-  return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
-}
 
 /**
  * Mounted once in app/layout.tsx, same as SitePopup — skips /admin and
@@ -22,6 +14,14 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
  * downgrade the prompt to a quiet, easy-to-miss UI for repeat offenders)
  * — so this only ever shows a dismissible banner and waits for an
  * actual click before calling Notification.requestPermission().
+ *
+ * This is only the FIRST-RUN nudge, and it can legitimately never
+ * appear again after one dismiss/decision — that's fine, because it's
+ * not the only way to enable push anymore. The bell dropdown in
+ * components/TopNav.tsx has its own persistent "Enable notifications"
+ * control for anyone who dismissed this, changed their mind later, or
+ * whose browser doesn't support push at all (in which case TopNav
+ * explains that plainly instead of just having nothing to click).
  */
 export function NotificationPrompt() {
   const pathname = usePathname();
@@ -31,46 +31,16 @@ export function NotificationPrompt() {
 
   useEffect(() => {
     if (skip) return;
-    if (typeof window === 'undefined') return;
-    if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) return;
-    if (Notification.permission !== 'default') return; // already decided, either way — nothing to ask
+    if (getPushStatus() !== 'default') return; // unsupported, or already decided either way
     if (localStorage.getItem(DISMISS_KEY)) return;
     setVisible(true);
   }, [skip]);
 
   async function enable() {
     setBusy(true);
-    try {
-      const permission = await Notification.requestPermission();
-      if (permission !== 'granted') {
-        localStorage.setItem(DISMISS_KEY, '1');
-        setVisible(false);
-        return;
-      }
-      const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-      if (!publicKey) {
-        setVisible(false);
-        return;
-      }
-      const registration = await navigator.serviceWorker.ready;
-      const subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        // Cast needed because TS's DOM lib types Uint8Array as backed by
-        // the more general ArrayBufferLike (which also covers
-        // SharedArrayBuffer) while BufferSource wants a plain
-        // ArrayBuffer specifically — Uint8Array.from() below always
-        // allocates a normal ArrayBuffer at runtime, so this is safe.
-        applicationServerKey: urlBase64ToUint8Array(publicKey) as BufferSource,
-      });
-      await fetch('/api/push/subscribe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(subscription.toJSON()),
-      });
-    } catch {
-      // Best-effort — a failed subscribe just means this device won't
-      // get push notifications, not worth surfacing an error over.
-    }
+    const result = await subscribeToPush();
+    if (!result.ok) localStorage.setItem(DISMISS_KEY, '1');
+    setBusy(false);
     setVisible(false);
   }
 

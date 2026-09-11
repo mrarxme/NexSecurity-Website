@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 import { SearchInput } from '@/components/SearchInput';
 import { relativeTime } from '@/lib/relativeTime';
+import { getPushStatus, subscribeToPush, type PushStatus } from '@/lib/webPushClient';
 
 type NavItem = { href: string; label: string; icon: JSX.Element; match: (path: string) => boolean };
 type SearchResult =
@@ -20,6 +21,14 @@ type PendingRequest = {
   first_seen: string;
   user_id: string | null;
   user_email: string;
+};
+type UserNotification = {
+  id: string;
+  type: 'class' | 'ebook' | 'routine';
+  title: string;
+  body: string;
+  url: string;
+  created_at: string;
 };
 
 // A background tab has its timers throttled by the browser, so a fixed
@@ -136,6 +145,9 @@ export function TopNav({
 
   const [notifOpen, setNotifOpen] = useState(false);
   const [pendingRequests, setPendingRequests] = useState<PendingRequest[]>([]);
+  const [notifications, setNotifications] = useState<UserNotification[]>([]);
+  const [pushStatus, setPushStatus] = useState<PushStatus>('unsupported');
+  const [enablingPush, setEnablingPush] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
 
   const items: NavItem[] = [
@@ -282,6 +294,79 @@ export function TopNav({
     };
   }, [isAdmin]);
 
+  // Polls this account's unread in-app notifications (see
+  // supabase/migrations/0013_user_notifications.sql) — for every
+  // signed-in user, not just admins. Same jittered-poll reasoning as
+  // the admin device-requests poll above: independent of it, on
+  // purpose, so the two never happen to land on the exact same tick.
+  useEffect(() => {
+    let cancelled = false;
+    async function poll() {
+      try {
+        const res = await fetch('/api/notifications');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setNotifications(data.notifications ?? []);
+      } catch {
+        // Silent — same reasoning as the device-requests poll.
+      }
+    }
+    poll();
+    const stop = jitteredPoll(poll, 20_000);
+    return () => {
+      cancelled = true;
+      stop();
+    };
+  }, []);
+
+  // Read once on mount (client-only — Notification.permission doesn't
+  // exist during SSR) and again every time the dropdown opens, since
+  // the user could have changed it from the browser's own site-settings
+  // UI at any point without this component knowing.
+  useEffect(() => {
+    setPushStatus(getPushStatus());
+  }, []);
+  useEffect(() => {
+    if (notifOpen) setPushStatus(getPushStatus());
+  }, [notifOpen]);
+
+  async function enablePush() {
+    setEnablingPush(true);
+    const result = await subscribeToPush();
+    setPushStatus(result.status);
+    setEnablingPush(false);
+  }
+
+  async function markRead(id: string) {
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+    try {
+      await fetch(`/api/notifications/${id}/read`, { method: 'POST' });
+    } catch {
+      // Best-effort — worst case it reappears on the next poll, which
+      // is a far better failure mode than leaving it stuck unread
+      // forever because of one dropped request.
+    }
+  }
+
+  async function markAllRead() {
+    const ids = notifications.map((n) => n.id);
+    setNotifications([]);
+    try {
+      await fetch('/api/notifications/read-all', { method: 'POST' });
+    } catch {
+      // Same best-effort reasoning as markRead — restore isn't worth
+      // the complexity here; a missed clear just means these come back
+      // on the next poll.
+      void ids;
+    }
+  }
+
+  function goToNotification(n: UserNotification) {
+    setNotifOpen(false);
+    markRead(n.id);
+    router.push(n.url);
+  }
+
   useEffect(() => {
     if (!notifOpen) return;
     function onPointerDown(e: MouseEvent | TouchEvent) {
@@ -411,8 +496,8 @@ export function TopNav({
 
           <div className="relative" ref={notifRef}>
             <button
-              onClick={() => isAdmin && setNotifOpen((v) => !v)}
-              title={isAdmin ? 'Device sign-in requests' : 'Notifications'}
+              onClick={() => setNotifOpen((v) => !v)}
+              title="Notifications"
               className="relative flex h-9 w-9 items-center justify-center rounded-full text-ink-faint transition hover:bg-vault-600 hover:text-ink"
             >
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -425,46 +510,123 @@ export function TopNav({
                 />
                 <path d="M10 19a2 2 0 0 0 4 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
               </svg>
-              {isAdmin && pendingRequests.length > 0 && (
-                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-danger px-1 text-[9px] font-semibold text-white">
-                  {pendingRequests.length > 9 ? '9+' : pendingRequests.length}
-                </span>
-              )}
+              {(() => {
+                const count = (isAdmin ? pendingRequests.length : 0) + notifications.length;
+                return count > 0 ? (
+                  <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-danger px-1 text-[9px] font-semibold text-white">
+                    {count > 9 ? '9+' : count}
+                  </span>
+                ) : null;
+              })()}
             </button>
 
-            {isAdmin && notifOpen && (
-              <div className="glass-panel-solid absolute right-0 z-20 mt-2 w-72 overflow-hidden rounded-xl py-1">
-                <p className="px-3.5 py-2 font-mono text-[10px] uppercase tracking-widest text-ink-faint">
-                  Device sign-in requests
-                </p>
-                {pendingRequests.length === 0 ? (
-                  <p className="px-3.5 py-4 text-center text-xs text-ink-faint">
-                    No pending requests right now.
-                  </p>
-                ) : (
-                  <ul className="max-h-72 overflow-y-auto">
-                    {pendingRequests.slice(0, 5).map((req) => (
-                      <li key={req.id}>
-                        <button
-                          onClick={() => goToRequest(req.id)}
-                          className="flex w-full flex-col items-start gap-0.5 px-3.5 py-2.5 text-left transition hover:bg-vault-600"
-                        >
-                          <span className="truncate text-sm text-ink">{req.user_email}</span>
-                          <span className="font-mono text-[10px] uppercase tracking-widest text-ink-faint">
-                            {req.device_label} · {relativeTime(req.first_seen)}
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
+            {notifOpen && (
+              <div className="glass-panel-solid absolute right-0 z-20 mt-2 max-h-[80vh] w-80 overflow-y-auto rounded-xl py-1">
+                {isAdmin && (
+                  <>
+                    <p className="px-3.5 py-2 font-mono text-[10px] uppercase tracking-widest text-ink-faint">
+                      Device sign-in requests
+                    </p>
+                    {pendingRequests.length === 0 ? (
+                      <p className="px-3.5 py-4 text-center text-xs text-ink-faint">
+                        No pending requests right now.
+                      </p>
+                    ) : (
+                      <ul className="max-h-52 overflow-y-auto">
+                        {pendingRequests.slice(0, 5).map((req) => (
+                          <li key={req.id}>
+                            <button
+                              onClick={() => goToRequest(req.id)}
+                              className="flex w-full flex-col items-start gap-0.5 px-3.5 py-2.5 text-left transition hover:bg-vault-600"
+                            >
+                              <span className="truncate text-sm text-ink">{req.user_email}</span>
+                              <span className="font-mono text-[10px] uppercase tracking-widest text-ink-faint">
+                                {req.device_label} · {relativeTime(req.first_seen)}
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <Link
+                      href="/admin/requests"
+                      onClick={() => setNotifOpen(false)}
+                      className="block border-t border-vault-border px-3.5 py-2.5 text-center text-xs font-medium text-signal transition hover:bg-vault-600"
+                    >
+                      View all requests
+                    </Link>
+                  </>
                 )}
-                <Link
-                  href="/admin/requests"
-                  onClick={() => setNotifOpen(false)}
-                  className="block border-t border-vault-border px-3.5 py-2.5 text-center text-xs font-medium text-signal transition hover:bg-vault-600"
-                >
-                  View all requests
-                </Link>
+
+                <div className={isAdmin ? 'border-t border-vault-border' : ''}>
+                  <div className="flex items-center justify-between px-3.5 py-2">
+                    <p className="font-mono text-[10px] uppercase tracking-widest text-ink-faint">Notifications</p>
+                    {notifications.length > 0 && (
+                      <button onClick={markAllRead} className="text-[10px] font-medium text-signal hover:underline">
+                        Mark all read
+                      </button>
+                    )}
+                  </div>
+
+                  {notifications.length === 0 ? (
+                    <p className="px-3.5 py-4 text-center text-xs text-ink-faint">You&rsquo;re all caught up.</p>
+                  ) : (
+                    <ul className="max-h-72 overflow-y-auto">
+                      {notifications.map((n) => (
+                        <li key={n.id}>
+                          <button
+                            onClick={() => goToNotification(n)}
+                            className="flex w-full flex-col items-start gap-0.5 px-3.5 py-2.5 text-left transition hover:bg-vault-600"
+                          >
+                            <span className="truncate text-sm text-ink">{n.title}</span>
+                            <span className="line-clamp-1 text-xs text-ink-dim">{n.body}</span>
+                            <span className="font-mono text-[10px] uppercase tracking-widest text-ink-faint">
+                              {relativeTime(n.created_at)}
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {/* A persistent, always-reachable way to turn on push —
+                      not just the one-time dismissible banner in
+                      NotificationPrompt.tsx. Also the ONLY place a user
+                      whose browser can't do push at all (most notably
+                      iOS Safari unless the site's been added to the
+                      Home Screen) gets told that plainly, instead of
+                      just never seeing an "Enable" option anywhere and
+                      wondering why. */}
+                  <div className="border-t border-vault-border px-3.5 py-2.5">
+                    {pushStatus === 'granted' && (
+                      <p className="text-[11px] text-ink-faint">Push notifications are on for this device.</p>
+                    )}
+                    {pushStatus === 'default' && (
+                      <button
+                        onClick={enablePush}
+                        disabled={enablingPush}
+                        className="text-[11px] font-medium text-signal hover:underline disabled:opacity-60"
+                      >
+                        {enablingPush ? 'Enabling…' : 'Enable push notifications on this device'}
+                      </button>
+                    )}
+                    {pushStatus === 'denied' && (
+                      <p className="text-[11px] text-ink-faint">
+                        Notifications are blocked for this site in your browser settings — enable them there to get
+                        push alerts here too.
+                      </p>
+                    )}
+                    {pushStatus === 'unsupported' && (
+                      <p className="text-[11px] text-ink-faint">
+                        This browser can&rsquo;t receive push notifications
+                        {/iPhone|iPad|iPod/.test(typeof navigator !== 'undefined' ? navigator.userAgent : '')
+                          ? ' — on iPhone/iPad, add this site to your Home Screen first, then open it from there.'
+                          : '.'}{' '}
+                        You&rsquo;ll still see new items here whenever you open the app.
+                      </p>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
           </div>
