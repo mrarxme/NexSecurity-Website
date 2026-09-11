@@ -4,6 +4,7 @@ import { createSupabaseAdminClient } from '@/lib/supabase/admin';
 import { eBookSchema } from '@/lib/validation';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { logAuditEvent } from '@/lib/audit';
+import { notifyNewEbook } from '@/lib/webPush';
 
 export const dynamic = 'force-dynamic';
 
@@ -56,6 +57,13 @@ export async function POST(request: NextRequest) {
   await logAuditEvent('ADMIN_ACTION', auth.user.email, data.id, {
     action: 'EBOOK_CREATED',
     title: data.title,
+  });
+
+  // Same fire-and-forget shape as notifyNewClass in
+  // app/api/admin/videos/route.ts — never awaited, so a slow push
+  // fan-out never delays the admin's own "created" response.
+  void notifyNewEbook(parsed.data.board_id, data.title, auth.user.email).catch((err) => {
+    console.error('[push] new-ebook notification failed', err);
   });
 
   return NextResponse.json({ e_book: data }, { status: 201 });
